@@ -7,12 +7,12 @@ alternatives that were ruled out.
 ## Build and check
 
 ```sh
-cargo test                     # 101 tests, no external services
+cargo test                     # 112 tests, no external services
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 
 # Documents too: TOML via taplo, Markdown via rumdl.
-taplo fmt --check Cargo.toml preset/config.toml taplo.toml rustfmt.toml rumdl.toml
+taplo fmt --check Cargo.toml preset/config.toml taplo.toml rumdl.toml
 rumdl check .
 ```
 
@@ -22,8 +22,8 @@ All of these must be clean before a commit. CI runs exactly these.
 otherwise reformat the copy of this repository that `cargo package` leaves under
 `target/`.
 
-The crate uses edition 2024 and needs a recent stable toolchain. Tabs, not spaces
-(`rustfmt.toml` sets `hard_tabs`).
+The crate uses edition 2024 and needs a recent stable toolchain. Formatting is
+whatever default `cargo fmt` produces; there is no `rustfmt.toml`.
 
 ## Layout
 

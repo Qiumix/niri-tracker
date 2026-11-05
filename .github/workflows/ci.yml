@@ -34,7 +34,7 @@ jobs:
       # otherwise walk into target/, where `cargo package` leaves a copy of this
       # repository with its own Cargo.toml.
       - name: Formatting (TOML)
-        run: taplo fmt --check Cargo.toml preset/config.toml taplo.toml rustfmt.toml rumdl.toml
+        run: taplo fmt --check Cargo.toml preset/config.toml taplo.toml rumdl.toml
 
       - name: Formatting (Markdown)
         run: rumdl check .

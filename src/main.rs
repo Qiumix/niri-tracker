@@ -10,6 +10,7 @@ use std::process::ExitCode;
 
 use chrono::Local;
 use clap::Parser as _;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use niri_tracker::cli::{
     Cli, Command, CompletionArgs, ConfigCommand, DetailsArgs, ReportArgs, write_completions,
@@ -220,21 +221,24 @@ fn render(response: niri_tracker::ipc::Response, json: bool) -> Result<ExitCode,
 }
 
 /// Print a report as a table.
+///
+/// Columns are measured in terminal cells, not characters: a Chinese title takes
+/// two cells per character, so counting characters would print a column that looks
+/// ragged to anyone reading it.
 fn print_report(report: &Report) {
     let width = report
         .rows
         .iter()
-        .map(|row| row.name.chars().count())
+        .map(|row| display_width(&row.name))
         .max()
         .unwrap_or(0)
         .clamp(8, 80);
 
     for row in &report.rows {
-        let name = truncate(&row.name, width);
         println!(
-            "{name:<width$}  {}",
+            "{}  {}",
+            pad(&truncate(&row.name, width), width),
             config::format_duration(std::time::Duration::from_secs(row.seconds.unsigned_abs())),
-            width = width
         );
     }
 
@@ -245,21 +249,50 @@ fn print_report(report: &Report) {
 
     println!();
     println!(
-        "{:<width$}  {}",
-        "Total",
+        "{}  {}",
+        pad("Total", width),
         config::format_duration(std::time::Duration::from_secs(
             report.total_seconds.unsigned_abs()
         )),
-        width = width
     );
 }
 
-/// Shorten a label to `width` characters, marking the cut.
+/// How many terminal cells `text` occupies.
+fn display_width(text: &str) -> usize {
+    UnicodeWidthStr::width(text)
+}
+
+/// Pad `text` with spaces to `width` cells.
+///
+/// `format!`'s `{:<width$}` pads by characters, which is the same thing only for
+/// text that is entirely one cell per character.
+fn pad(text: &str, width: usize) -> String {
+    let used = display_width(text);
+    format!("{text}{}", " ".repeat(width.saturating_sub(used)))
+}
+
+/// Shorten a label to `width` cells, marking the cut.
+///
+/// The cut is by cells, and it never splits a character from its combining marks:
+/// those are zero cells wide, so they are included with the character before them
+/// rather than being cut away from it.
 fn truncate(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
+    if display_width(text) <= width {
         return text.to_owned();
     }
-    let mut shortened: String = text.chars().take(width.saturating_sub(1)).collect();
+
+    // One cell is kept for the ellipsis.
+    let budget = width.saturating_sub(1);
+    let mut shortened = String::new();
+    let mut used = 0;
+    for character in text.chars() {
+        let cells = UnicodeWidthChar::width(character).unwrap_or(0);
+        if used + cells > budget {
+            break;
+        }
+        shortened.push(character);
+        used += cells;
+    }
     shortened.push('…');
     shortened
 }
@@ -353,4 +386,114 @@ fn schema_header() -> String {
         return String::from("#:schema ./schema.json\n\n");
     }
     String::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ascii_width_is_its_length() {
+        assert_eq!(display_width("nvim"), 4);
+        assert_eq!(display_width(""), 0);
+    }
+
+    #[test]
+    fn cjk_is_two_cells_per_character() {
+        assert_eq!(display_width("中文"), 4);
+        assert_eq!(display_width("理解项目"), 8);
+    }
+
+    #[test]
+    fn mixed_text_adds_up() {
+        // Two Chinese characters plus " ab" plus two more.
+        assert_eq!(display_width("中文 ab 中文"), 4 + 1 + 2 + 1 + 4);
+    }
+
+    #[test]
+    fn a_combining_mark_adds_no_width() {
+        // "e" followed by U+0301 COMBINING ACUTE ACCENT renders as one cell.
+        assert_eq!(display_width("e\u{301}"), 1);
+    }
+
+    #[test]
+    fn padding_counts_cells_not_characters() {
+        // Four cells wide, so two spaces, not four.
+        assert_eq!(pad("中文", 6), "中文  ");
+        assert_eq!(display_width(&pad("中文", 6)), 6);
+    }
+
+    #[test]
+    fn padding_never_shrinks_a_long_string() {
+        assert_eq!(pad("abcdefgh", 3), "abcdefgh");
+    }
+
+    #[test]
+    fn truncation_counts_cells_not_characters() {
+        // Twelve cells of Chinese, cut to six. Each character is two cells, so at
+        // most two fit before the ellipsis; one cell is left for `pad` to fill,
+        // which is what keeps the column aligned.
+        let cut = truncate("中文中文中文", 6);
+        assert!(cut.ends_with('…'), "got {cut:?}");
+        assert_eq!(cut, "中文…");
+        assert!(display_width(&cut) <= 6);
+    }
+
+    #[test]
+    fn truncation_leaves_fitting_text_alone() {
+        assert_eq!(truncate("nvim", 8), "nvim");
+        assert_eq!(truncate("中文", 4), "中文");
+    }
+
+    #[test]
+    fn truncation_does_not_split_a_character_from_its_combining_mark() {
+        // Four cells cut to three, which leaves a budget of two: "x" and "e" fit,
+        // the accent is free, and "y" does not. The accent must go with its base
+        // rather than being cut away from it.
+        let cut = truncate("xe\u{301}yy", 3);
+        assert_eq!(
+            cut, "xe\u{301}…",
+            "a combining mark must stay with its base"
+        );
+        assert_eq!(display_width(&cut), 3);
+    }
+
+    #[test]
+    fn truncation_never_exceeds_the_width() {
+        for width in 2..=20 {
+            for text in ["中文中文中文中文", "mixed 中文 text", "abcdefghij"] {
+                let cut = truncate(text, width);
+                assert!(
+                    display_width(&cut) <= width,
+                    "{text:?} cut to {width} is {} cells: {cut:?}",
+                    display_width(&cut)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_truncated_row_pads_to_the_same_column() {
+        // This is the bug that prompted the fix: rows of Chinese titles used to
+        // push the duration column to a different place on every line.
+        let names = [
+            "理解项目，只看源码就行",
+            "fish",
+            "Yazi: niri-tracker",
+            "图片查看器",
+        ];
+        let width = names
+            .iter()
+            .map(|name| display_width(name))
+            .max()
+            .unwrap_or(0);
+        let columns: Vec<usize> = names
+            .iter()
+            .map(|name| display_width(&pad(&truncate(name, width), width)))
+            .collect();
+        assert!(
+            columns.iter().all(|column| *column == width),
+            "rows ended at different columns: {columns:?}"
+        );
+    }
 }
