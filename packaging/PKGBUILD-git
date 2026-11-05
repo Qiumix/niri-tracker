@@ -1,0 +1,72 @@
+# Maintainer: qiumix <qiumix@example.com>
+#
+# Development build from the tip of the default branch. The version string is
+# derived by pkgver() below, so this package is rebuilt on every commit.
+
+pkgname=niri-tracker-git
+_pkgname=niri-tracker
+pkgver=0.1.0.r0.g0000000
+pkgrel=1
+pkgdesc="Screen time tracking for the niri Wayland compositor"
+arch=('x86_64' 'aarch64')
+url="https://github.com/qiumix/niri-tracker"
+license=('MIT')
+depends=('glibc')
+makedepends=('cargo' 'git')
+provides=("$_pkgname")
+conflicts=("$_pkgname" "${_pkgname}-bin")
+source=("git+${url}.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$_pkgname"
+  printf '%s.r%s.g%s' \
+    "$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" \
+    "$(git rev-list --count HEAD)" \
+    "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+  cd "$_pkgname"
+  # Vendored crates are fetched here so the build phase works offline and the
+  # network is not touched while compiling.
+  cargo fetch --locked
+}
+
+build() {
+  cd "$_pkgname"
+  export CARGO_PROFILE_RELEASE_STRIP=true
+  export CARGO_PROFILE_RELEASE_LTO=thin
+  cargo build --release --locked --frozen
+}
+
+check() {
+  cd "$_pkgname"
+  cargo test --release --locked --frozen
+}
+
+package() {
+  cd "$_pkgname"
+
+  install -Dm755 "target/release/$_pkgname" -t "$pkgdir/usr/bin/"
+  install -Dm644 packaging/niri-tracker.service -t "$pkgdir/usr/lib/systemd/user/"
+  install -Dm644 LICENSE -t "$pkgdir/usr/share/licenses/$pkgname/"
+
+  # The schema ships next to the binary so `niri-tracker config init` can point
+  # a linter at a path that exists.
+  "$pkgdir/usr/bin/$_pkgname" schema > "$srcdir/schema.json" 2>/dev/null
+  install -Dm644 "$srcdir/schema.json" "$pkgdir/usr/share/niri-tracker/schema.json"
+
+  # Completions are generated from the binary that was just installed, so they
+  # can never describe a different set of flags than `--help` shows.
+  local shell
+  for shell in bash zsh fish; do
+    "$pkgdir/usr/bin/$_pkgname" completions "$shell" > "$srcdir/$shell.completion"
+  done
+  install -Dm644 "$srcdir/bash.completion" \
+    "$pkgdir/usr/share/bash-completion/completions/$_pkgname"
+  install -Dm644 "$srcdir/zsh.completion" \
+    "$pkgdir/usr/share/zsh/site-functions/_$_pkgname"
+  install -Dm644 "$srcdir/fish.completion" \
+    "$pkgdir/usr/share/fish/vendor_completions.d/$_pkgname.fish"
+}

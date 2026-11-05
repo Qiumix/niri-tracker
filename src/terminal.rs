@@ -1,0 +1,263 @@
+//! Reading the foreground process of a terminal.
+//!
+//! A terminal window reports the same app_id for every window and tab, so time
+//! spent in nvim is attributed to `kitty`. The interesting name lives one level
+//! down: whatever is in the foreground of the terminal's controlling pty.
+//!
+//! The kernel exposes that as `tpgid` in `/proc/<pid>/stat`: the process group
+//! that owns the terminal. A descendant of the terminal whose own process group
+//! equals that value is the foreground job. This works for any terminal
+//! emulator, needs no cooperation from it, and does not depend on the shell
+//! configuring a title format.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+/// What `/proc` says about one process.
+#[derive(Debug, Clone)]
+struct ProcEntry {
+	pid: u32,
+	ppid: u32,
+	pgrp: u32,
+	tpgid: i32,
+	tty_nr: i64,
+}
+
+/// Find the foreground process name for a terminal window.
+///
+/// `root_pid` is the pid niri reports for the window. Returns the basename of the
+/// foreground process's `argv[0]`, or `None` when nothing conclusive is found,
+/// which the caller treats as "credit the terminal itself".
+#[must_use]
+pub fn foreground_process_name(root_pid: u32) -> Option<String> {
+	let table = read_table();
+	let foreground = find_foreground(&table, root_pid)?;
+	process_name(foreground)
+}
+
+/// The pid of the foreground job, if one is identifiable.
+///
+/// Split out from [`foreground_process_name`] so the decision can be tested
+/// without depending on what happens to be running.
+fn find_foreground(table: &HashMap<u32, ProcEntry>, root_pid: u32) -> Option<u32> {
+	// The terminal itself is not the answer: its own pgrp usually does not equal
+	// its tpgid once a job owns the pty, but even when it does, naming the
+	// terminal is what we are trying to improve on.
+	if !table.contains_key(&root_pid) {
+		return None;
+	}
+
+	let mut candidates: Vec<&ProcEntry> = table
+		.values()
+		.filter(|entry| entry.pid != root_pid)
+		.filter(|entry| entry.tty_nr != 0)
+		.filter(|entry| entry.tpgid >= 0 && entry.pgrp as i32 == entry.tpgid)
+		.filter(|entry| is_descendant(table, entry.pid, root_pid))
+		.collect();
+
+	// Two tabs run two foreground jobs on two ptys, and the compositor does not
+	// say which tab is visible. The most recently started process is the better
+	// guess: starting a job is what makes a tab interesting.
+	candidates.sort_by_key(|entry| entry.pid);
+
+	candidates.last().map(|entry| entry.pid)
+}
+
+/// Whether `pid` descends from `ancestor`.
+fn is_descendant(table: &HashMap<u32, ProcEntry>, pid: u32, ancestor: u32) -> bool {
+	let mut current = pid;
+	// A malformed tree could loop; the depth bound turns that into "no" instead
+	// of a hang.
+	for _ in 0..64 {
+		let Some(entry) = table.get(&current) else {
+			return false;
+		};
+		if entry.ppid == ancestor {
+			return true;
+		}
+		if entry.ppid == 0 || entry.ppid == current {
+			return false;
+		}
+		current = entry.ppid;
+	}
+	false
+}
+
+/// The basename of a process's `argv[0]`.
+///
+/// `cmdline` is preferred over `comm` because `comm` is truncated to 15 bytes by
+/// the kernel, which turns `firefox-bin` into `firefox-bin` but mangles longer
+/// names into new ones.
+fn process_name(pid: u32) -> Option<String> {
+	let path = PathBuf::from(format!("/proc/{pid}/cmdline"));
+	let raw = std::fs::read(path).ok()?;
+	let first = raw.split(|byte| *byte == 0).next()?;
+	if first.is_empty() {
+		return None;
+	}
+	let text = String::from_utf8_lossy(first);
+	let base = text.rsplit('/').next().unwrap_or(&text);
+	let base = base.trim();
+	if base.is_empty() {
+		None
+	} else {
+		Some(base.to_owned())
+	}
+}
+
+/// Read `/proc` into a table, skipping anything that vanishes mid-read.
+///
+/// Processes exit while this runs, so a failed open is normal rather than an
+/// error worth reporting.
+fn read_table() -> HashMap<u32, ProcEntry> {
+	let mut table = HashMap::new();
+
+	let Ok(entries) = std::fs::read_dir("/proc") else {
+		return table;
+	};
+
+	for entry in entries.flatten() {
+		let name = entry.file_name();
+		let Some(name) = name.to_str() else {
+			continue;
+		};
+		let Ok(pid) = name.parse::<u32>() else {
+			continue;
+		};
+		if let Some(parsed) = read_entry(pid) {
+			table.insert(pid, parsed);
+		}
+	}
+
+	table
+}
+
+/// Parse one `/proc/<pid>/stat`.
+///
+/// The `comm` field can contain spaces and parentheses, so fields are counted
+/// from the last `)`, not from the start of the line.
+fn read_entry(pid: u32) -> Option<ProcEntry> {
+	let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+	let close = text.rfind(')')?;
+	let rest = text.get(close + 1..)?;
+
+	let mut fields = rest.split_whitespace();
+	// After the comm, the next fields are state, ppid, pgrp, session, tty_nr,
+	// tpgid.
+	let _state = fields.next()?;
+	let ppid = fields.next()?.parse::<u32>().ok()?;
+	let pgrp = fields.next()?.parse::<u32>().ok()?;
+	let _session = fields.next()?;
+	let tty_nr = fields.next()?.parse::<i64>().ok()?;
+	let tpgid = fields.next()?.parse::<i32>().ok()?;
+
+	Some(ProcEntry {
+		pid,
+		ppid,
+		pgrp,
+		tpgid,
+		tty_nr,
+	})
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn entry(pid: u32, ppid: u32, pgrp: u32, tpgid: i32, tty_nr: i64) -> ProcEntry {
+		ProcEntry {
+			pid,
+			ppid,
+			pgrp,
+			tpgid,
+			tty_nr,
+		}
+	}
+
+	fn table(entries: Vec<ProcEntry>) -> HashMap<u32, ProcEntry> {
+		entries
+			.into_iter()
+			.map(|entry| (entry.pid, entry))
+			.collect()
+	}
+
+	#[test]
+	fn the_foreground_job_is_found() {
+		// kitty(100) -> fish(101), and fish's own child nvim(102) owns the pty.
+		let table = table(vec![
+			entry(100, 1, 100, -1, 0),
+			entry(101, 100, 101, 102, 7),
+			entry(102, 101, 102, 102, 7),
+		]);
+		assert_eq!(find_foreground(&table, 100), Some(102));
+	}
+
+	#[test]
+	fn a_shell_at_the_prompt_is_the_foreground_job() {
+		let table = table(vec![
+			entry(100, 1, 100, -1, 0),
+			entry(101, 100, 101, 101, 7),
+		]);
+		assert_eq!(find_foreground(&table, 100), Some(101));
+	}
+
+	#[test]
+	fn a_process_without_a_terminal_is_ignored() {
+		let table = table(vec![
+			entry(100, 1, 100, -1, 0),
+			entry(101, 100, 101, 101, 0),
+		]);
+		assert_eq!(find_foreground(&table, 100), None);
+	}
+
+	#[test]
+	fn an_unrelated_foreground_job_is_not_claimed() {
+		// 500 is a background job of a different terminal.
+		let table = table(vec![entry(100, 1, 100, -1, 0), entry(500, 1, 500, 500, 9)]);
+		assert_eq!(find_foreground(&table, 100), None);
+	}
+
+	#[test]
+	fn the_terminal_itself_is_never_the_answer() {
+		let table = table(vec![entry(100, 1, 100, 100, 7)]);
+		assert_eq!(find_foreground(&table, 100), None);
+	}
+
+	#[test]
+	fn the_newest_of_several_tabs_wins() {
+		// Two tabs: fish(101) on pty 7 and nvim(201) on pty 8.
+		let table = table(vec![
+			entry(100, 1, 100, -1, 0),
+			entry(101, 100, 101, 101, 7),
+			entry(201, 100, 201, 201, 8),
+		]);
+		assert_eq!(find_foreground(&table, 100), Some(201));
+	}
+
+	#[test]
+	fn a_deep_descendant_is_still_a_descendant() {
+		let table = table(vec![
+			entry(100, 1, 100, -1, 0),
+			entry(101, 100, 101, 104, 7),
+			entry(102, 101, 102, 104, 7),
+			entry(104, 102, 104, 104, 7),
+		]);
+		assert_eq!(find_foreground(&table, 100), Some(104));
+	}
+
+	#[test]
+	fn a_missing_root_yields_nothing() {
+		let table = table(vec![entry(101, 100, 101, 101, 7)]);
+		assert_eq!(find_foreground(&table, 100), None);
+	}
+
+	#[test]
+	fn a_cycle_does_not_hang() {
+		let table = table(vec![
+			entry(100, 1, 100, -1, 0),
+			entry(101, 102, 101, 101, 7),
+			entry(102, 101, 101, 101, 7),
+		]);
+		assert_eq!(find_foreground(&table, 100), None);
+	}
+}

@@ -1,0 +1,36 @@
+[Unit]
+Description=Screen time tracking for the niri compositor
+Documentation=https://github.com/qiumix/niri-tracker
+
+# One daemon per Wayland session, so it belongs to the session target rather
+# than default.target: it must not outlive the compositor it is watching.
+PartOf=graphical-session.target
+Requires=niri.service
+After=niri.service graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/niri-tracker daemon
+
+# niri --session imports WAYLAND_DISPLAY and NIRI_SOCKET into the user manager,
+# so the daemon inherits both. If it starts before that import has happened it
+# logs a clear failure and exits; Restart brings it back.
+
+Restart=on-failure
+RestartSec=5s
+
+# A tracker is background work: it must never compete with the compositor for
+# CPU under memory or IO pressure.
+Slice=background.slice
+Nice=10
+IOSchedulingClass=idle
+
+# Nothing it does needs write access outside its own data directory.
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/niri-tracker
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=graphical-session.target

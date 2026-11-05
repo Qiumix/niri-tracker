@@ -1,0 +1,62 @@
+# niri-tracker's default configuration.
+#
+# This file is compiled into the binary and is the complete set of defaults.
+# A user file at $XDG_CONFIG_HOME/niri-tracker/config.toml only needs the keys
+# it wants to change: anything omitted keeps the value below.
+#
+# A TOML linter such as taplo can validate a user file against the generated
+# schema; run `niri-tracker config init` to write one that points at it.
+
+# Arrays below (`[[terminal]]`, `[[alias]]`) are appended to these defaults
+# rather than replacing them. Set this to false to take full control: your
+# arrays then replace the ones here wholesale.
+merge_preset_arrays = true
+
+[idle]
+# How long the keyboard and mouse must be untouched before time stops counting.
+# "0s" disables idle detection entirely, which is the default: every second the
+# session is up counts as screen time.
+#
+# Accepts "90s", "5m", "1h30m", or a bare number of seconds.
+timeout = "0s"
+
+[storage]
+# Delete sessions older than this. "0s" keeps everything, which is the default:
+# the interval model stores a few hundred rows a day, so there is no reason to
+# throw history away behind the user's back.
+retention = "0s"
+
+[report]
+# Apply a light normalisation to window titles when grouping by title. Off by
+# default: what you see in a report is what the window title actually said.
+normalize_titles = false
+
+# Strip trailing counters such as "Inbox (3)" or "Tab 2" before grouping. Only
+# consulted when normalize_titles is true.
+strip_counters = true
+
+# Terminals report the same app_id for every window, so the interesting part is
+# whatever runs inside them. These entries are looked up by app_id and resolved
+# to the foreground process on the terminal's controlling pty.
+[[terminal]]
+app_ids = ["kitty", "alacritty", "foot", "footclient", "wezterm", "ghostty", "konsole", "gnome-terminal"]
+# Credit the foreground process with the time instead of the terminal itself.
+split = true
+# When the foreground process cannot be read (permissions, a race), what to
+# credit the time to: "terminal" keeps the terminal's own app_id, "process" is
+# not possible without a process, so "terminal" is the only useful value today.
+fallback = "terminal"
+
+# Aliases merge several app_ids into one name. They are applied when a report is
+# generated, never to the stored rows, so renaming is always reversible.
+#
+# [[alias]]
+# name = "Browser"
+# app_ids = ["firefox", "floorp"]
+# # Optional: further split that one app by a substring of its title. Anything
+# # not matching any of these becomes "Browser (Other)" when unmatched = "other".
+# titles = ["GitHub", "Documentation"]
+# # What to do with time on a listed app_id whose title matched nothing:
+# #   "keep"  - leave it under its own app_id (the default)
+# #   "other" - fold it into "<name> (Other)"
+# unmatched = "keep"

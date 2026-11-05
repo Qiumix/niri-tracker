@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked
+
+      # The schema is a release artefact rather than a tracked file, so the only
+      # thing worth checking here is that it can be generated at all, and twice
+      # in a row identically: a schema that changes between runs would make the
+      # shipped copy depend on iteration order rather than on the types.
+      - name: Schema is deterministic
+        run: |
+          cargo run --quiet -- schema > /tmp/schema-a.json
+          cargo run --quiet -- schema > /tmp/schema-b.json
+          diff -u /tmp/schema-a.json /tmp/schema-b.json
+
+      - name: Completions generate
+        run: |
+          for shell in bash zsh fish; do
+            cargo run --quiet -- completions "$shell" > "/tmp/$shell.completion"
+            test -s "/tmp/$shell.completion"
+          done
