@@ -21,4 +21,4 @@ pub use protocol::{
 	Args, Empty, ErrorKind, GroupKey, LiveStatus, Payload, QueryArgs, Report, Request, Response,
 	Row, Status, Verb, WireError, encode_line,
 };
-pub use server::{Handler, Server};
+pub use server::Server;

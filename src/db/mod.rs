@@ -225,6 +225,14 @@ impl Store {
 		Ok(stored.and_then(|day| NaiveDate::parse_from_str(&day, "%Y-%m-%d").ok()))
 	}
 
+	/// How many intervals are stored, for `status`.
+	pub fn count(&self) -> Result<u64, Error> {
+		let count: i64 = self
+			.conn
+			.query_row("SELECT COUNT(*) FROM session", [], |row| row.get(0))?;
+		Ok(count.max(0).unsigned_abs())
+	}
+
 	/// Whether a row is still open. Used by tests and by `status`.
 	pub fn is_open(&self, id: i64) -> Result<Option<bool>, Error> {
 		let value = self

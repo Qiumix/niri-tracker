@@ -6,7 +6,9 @@
 //! a report and `status` can never disagree.
 
 pub mod cli;
+pub mod compositor;
 pub mod config;
+pub mod daemon;
 pub mod db;
 pub mod ipc;
 pub mod report;
