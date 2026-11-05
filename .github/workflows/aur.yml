@@ -1,0 +1,205 @@
+name: AUR
+
+# Triggered by the Release workflow finishing rather than by the tag itself.
+# The -bin package needs the checksums of the tarballs the release uploads, and a
+# workflow started by the same tag push would race the upload; waiting for the
+# Release to succeed removes the race instead of retrying around it.
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  # For re-syncing a published release, or creating an AUR repository that does
+  # not exist yet.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without the leading v, as in 0.1.1
+        required: true
+      package:
+        description: Which package to sync
+        type: choice
+        options: [both, bin, git]
+        default: both
+
+permissions:
+  contents: read
+
+jobs:
+  aur:
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
+    env:
+      AUR_USER: Qiumix
+      AUR_EMAIL: j487428862@gmail.com
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # `workflow_run` checks out the default branch by default, which would
+          # read the packaging files as they are now rather than as they were at
+          # the release being published.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Decide what to publish
+        id: what
+        run: |
+          set -eu
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+            wanted="${{ inputs.package }}"
+          else
+            version="${{ github.event.workflow_run.head_branch }}"
+            version="${version#v}"
+            wanted=both
+          fi
+
+          manifest="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          if [ "$version" != "$manifest" ]; then
+            echo "::error::release v$version does not match Cargo.toml $manifest"
+            exit 1
+          fi
+
+          # The -git package's snapshot is derived exactly the way its pkgver()
+          # does, so .SRCINFO matches what a local build would produce.
+          git_version="$(printf '%s.r%s.g%s' \
+            "$manifest" \
+            "$(git rev-list --count HEAD)" \
+            "$(git rev-parse --short HEAD)")"
+
+          # A case rather than `[ ] || [ ] &&`, which returns non-zero for the
+          # case that does not match and would abort under `set -e`.
+          case "$wanted" in
+            both) bin=true;  gitpkg=true ;;
+            bin)  bin=true;  gitpkg=false ;;
+            git)  bin=false; gitpkg=true ;;
+            *)    echo "::error::unknown package selection: $wanted"; exit 1 ;;
+          esac
+
+          {
+            echo "version=$version"
+            echo "git_version=$git_version"
+            echo "bin=$bin"
+            echo "git=$gitpkg"
+          } >> "$GITHUB_OUTPUT"
+          echo "publishing bin=$bin git=$gitpkg for v$version, snapshot $git_version"
+
+      - name: Set up SSH for AUR
+        run: |
+          set -eu
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          # Written from the secret rather than checked out: the key never exists
+          # in the repository or in the log.
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts 2>/dev/null
+          cat > ~/.ssh/config <<'CONFIG'
+          Host aur.archlinux.org
+            User aur
+            IdentityFile ~/.ssh/aur
+            IdentitiesOnly yes
+            StrictHostKeyChecking accept-new
+          CONFIG
+          chmod 600 ~/.ssh/config
+          ssh -o BatchMode=yes -T aur@aur.archlinux.org || true
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+
+      - name: Publish niri-tracker-bin
+        if: steps.what.outputs.bin == 'true'
+        env:
+          VERSION: ${{ steps.what.outputs.version }}
+        run: |
+          set -eu
+          checksum() {
+            curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors \
+              "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/niri-tracker-$1-unknown-linux-gnu.tar.gz.sha256" \
+              | awk '{print $1}'
+          }
+          x86="$(checksum x86_64)"
+          arm="$(checksum aarch64)"
+
+          dir="$RUNNER_TEMP/niri-tracker-bin"
+          checkout() {
+            if ! git clone --quiet "ssh://aur@aur.archlinux.org/niri-tracker-bin.git" "$1" 2>/dev/null; then
+              mkdir -p "$1"
+              git -C "$1" init --quiet --initial-branch=master
+              git -C "$1" remote add origin "ssh://aur@aur.archlinux.org/niri-tracker-bin.git"
+            fi
+          }
+          checkout "$dir"
+
+          # The version has to be replaced wherever it appears — in pkgver, in
+          # the source URL, and in the local filename that .SRCINFO expands it
+          # into — so the old value is taken first. A repository that has never
+          # been pushed has no PKGBUILD, and then the template's own version is
+          # the one to replace.
+          old="$(sed -n 's/^pkgver=//p' "$dir/PKGBUILD" 2>/dev/null || true)"
+          if [ -z "$old" ]; then
+            old="$(sed -n 's/^pkgver=//p' packaging/PKGBUILD-bin)"
+          fi
+          # Dots are regex wildcards; escaped so a version like 0.1.1 cannot
+          # match something unintended.
+          old_escaped="$(printf '%s' "$old" | sed 's/[.]/\\./g')"
+
+          cp packaging/PKGBUILD-bin "$dir/PKGBUILD"
+          cp packaging/SRCINFO-bin "$dir/.SRCINFO"
+
+          if [ "$old" != "$VERSION" ]; then
+            sed -i "s|$old_escaped|$VERSION|g" "$dir/PKGBUILD" "$dir/.SRCINFO"
+          fi
+          sed -i "s|^pkgver=.*|pkgver=$VERSION|; s|^pkgrel=.*|pkgrel=1|" "$dir/PKGBUILD"
+          sed -i "s|^\([[:space:]]*\)pkgver = .*|\1pkgver = $VERSION|; \
+                  s|^\([[:space:]]*\)pkgrel = .*|\1pkgrel = 1|" "$dir/.SRCINFO"
+          sed -i "s|^sha256sums_x86_64=.*|sha256sums_x86_64=('$x86')|; \
+                  s|^sha256sums_aarch64=.*|sha256sums_aarch64=('$arm')|" "$dir/PKGBUILD"
+          sed -i "s|^\([[:space:]]*\)sha256sums_x86_64 = .*|\1sha256sums_x86_64 = $x86|; \
+                  s|^\([[:space:]]*\)sha256sums_aarch64 = .*|\1sha256sums_aarch64 = $arm|" "$dir/.SRCINFO"
+
+          cd "$dir"
+          git config user.name "$AUR_USER"
+          git config user.email "$AUR_EMAIL"
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
+            echo "niri-tracker-bin is already at v$VERSION"
+            exit 0
+          fi
+          git commit --quiet -m "Update to v$VERSION"
+          git push --quiet origin master
+          echo "published niri-tracker-bin v$VERSION"
+
+      - name: Publish niri-tracker-git
+        if: steps.what.outputs.git == 'true'
+        env:
+          GIT_VERSION: ${{ steps.what.outputs.git_version }}
+        run: |
+          set -eu
+          dir="$RUNNER_TEMP/niri-tracker-git"
+          if ! git clone --quiet "ssh://aur@aur.archlinux.org/niri-tracker-git.git" "$dir" 2>/dev/null; then
+            mkdir -p "$dir"
+            git -C "$dir" init --quiet --initial-branch=master
+            git -C "$dir" remote add origin "ssh://aur@aur.archlinux.org/niri-tracker-git.git"
+          fi
+
+          cp packaging/PKGBUILD-git "$dir/PKGBUILD"
+          cp packaging/SRCINFO-git "$dir/.SRCINFO"
+
+          # The -git package builds the tip of the default branch, so only the
+          # version snapshot changes; sources are always SKIP.
+          sed -i "s|^pkgver=.*|pkgver=$GIT_VERSION|" "$dir/PKGBUILD"
+          sed -i "s|^\([[:space:]]*\)pkgver = .*|\1pkgver = $GIT_VERSION|" "$dir/.SRCINFO"
+
+          cd "$dir"
+          git config user.name "$AUR_USER"
+          git config user.email "$AUR_EMAIL"
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
+            echo "niri-tracker-git is already at $GIT_VERSION"
+            exit 0
+          fi
+          git commit --quiet -m "Update to $GIT_VERSION"
+          git push --quiet origin master
+          echo "published niri-tracker-git $GIT_VERSION"

@@ -40,7 +40,7 @@ The crate uses edition 2024 and needs a recent stable toolchain. Tabs, not space
 | `src/daemon.rs` | Wires everything together on one thread. |
 | `src/main.rs` | The command line. |
 | `preset/config.toml` | The defaults, compiled in with `include_str!`. |
-| `packaging/` | Two PKGBUILDs and the systemd unit. Not built by cargo. |
+| `packaging/` | Two PKGBUILDs, their `.SRCINFO` templates, the systemd unit. Not built by cargo. |
 
 ## Rules this codebase actually follows
 
@@ -144,6 +144,24 @@ also bumps `INFO_VERSION`.
 
 (The first four commits predate this convention and are left as they are.)
 
+## Packaging
+
+Two AUR packages: `niri-tracker-bin` ships the release tarball, `niri-tracker-git`
+builds the tip of `main`. Each AUR repository holds exactly `PKGBUILD` and
+`.SRCINFO`; both are generated from `packaging/` and never edited there.
+
+`packaging/SRCINFO-bin` and `SRCINFO-git` are **templates**, not the files that
+end up in AUR. The workflow substitutes the version and checksums into them
+because the runner is an Ubuntu machine without `makepkg`. After changing either
+PKGBUILD, regenerate them on an Arch host and commit the result:
+
+```sh
+./packaging/regen-srcinfo.sh
+```
+
+`packaging/niri-tracker.service` is installed by both packages and is the same
+file the systemd package ships.
+
 ## Releasing
 
 The version lives in `Cargo.toml` and nowhere else — there is no `version.go`
@@ -156,7 +174,19 @@ git tag -a v0.2.0 -m "v0.2.0"
 git push origin v0.2.0
 ```
 
-The workflow then builds both targets, attaches them to the GitHub release, and
-the AUR `-bin` package picks them up. `-git` follows `main` and needs no action.
+Three workflows follow the tag, in this order:
 
-For crates.io, `cargo publish --registry crates-io` after the tag.
+1. **Release** builds both targets, uploads the tarballs and their checksums, and
+   publishes to crates.io unless that version is already there.
+2. **AUR** starts when Release succeeds — not on the tag itself, so it cannot
+   race the asset upload — and pushes both packages: `-bin` with the new version
+   and checksums, `-git` with a refreshed version snapshot.
+
+Neither publishes a version that disagrees with `Cargo.toml`; both fail loudly
+instead. `AUR` can also be run by hand from the Actions tab with a version and a
+package choice, which is how a repository that has never been pushed gets
+created.
+
+`AUR` needs the `AUR_SSH_PRIVATE_KEY` secret: an ed25519 key registered on the
+AUR account and made for this purpose alone, so deleting it later ends the
+automation without touching anything else.
