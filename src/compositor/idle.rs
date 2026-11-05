@@ -83,21 +83,20 @@ pub enum Input {
 
 /// A transition worth reacting to, in the order it happened.
 ///
-/// The inhibitor variants carry the fact directly rather than leaving the caller
-/// to derive it from [`IdleState::inhibited`]: the two notifications arrive in
-/// whichever order the compositor chooses, so "input has not gone quiet yet but
-/// an inhibitor just appeared" is a real state that the derived answer gets
-/// wrong.
+/// [`IdleEvent::InhibitorChanged`] deliberately carries no direction. The
+/// inhibitor-aware notification sends `resumed` both when input comes back and
+/// when an inhibitor appears, so the event cannot say which happened; only
+/// [`IdleState::inhibited`] can, and it can only be asked once both notifications
+/// have been considered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdleEvent {
     /// Input went quiet after the timeout.
     InputIdle,
     /// Input came back.
     InputActive,
-    /// The inhibitor-aware notification fired, meaning no inhibitor is held.
-    Uninhibited,
-    /// The inhibitor-aware notification resumed, meaning an inhibitor now is.
-    Inhibited,
+    /// The inhibitor-aware notification changed state. Ask [`IdleState::inhibited`]
+    /// for what it means.
+    InhibitorChanged,
 }
 
 /// The state the protocol events update, and the queue of transitions.
@@ -386,11 +385,11 @@ impl Dispatch<ExtIdleNotificationV1, InhibitedMarker> for IdleState {
         match event {
             NotificationEvent::Idled => {
                 state.inhibited_idle = true;
-                state.pending.push(IdleEvent::Uninhibited);
+                state.pending.push(IdleEvent::InhibitorChanged);
             }
             NotificationEvent::Resumed => {
                 state.inhibited_idle = false;
-                state.pending.push(IdleEvent::Inhibited);
+                state.pending.push(IdleEvent::InhibitorChanged);
             }
             _ => {}
         }
@@ -450,10 +449,10 @@ mod tests {
     fn events_are_reported_in_order_and_drained_once() {
         let mut state = state();
         state.pending.push(IdleEvent::InputIdle);
-        state.pending.push(IdleEvent::Inhibited);
+        state.pending.push(IdleEvent::InhibitorChanged);
         assert_eq!(
             state.drain(),
-            vec![IdleEvent::InputIdle, IdleEvent::Inhibited]
+            vec![IdleEvent::InputIdle, IdleEvent::InhibitorChanged]
         );
         assert!(
             state.drain().is_empty(),

@@ -212,6 +212,24 @@ mod tests {
     }
 
     #[test]
+    fn a_blank_alias_title_is_rejected() {
+        let preset: Config = toml::from_str(PRESET).unwrap();
+        let user = parse_user(
+            r#"
+            [[alias]]
+            name = "Browser"
+            app_ids = ["firefox"]
+            titles = ["  "]
+            "#,
+        )
+        .unwrap();
+        assert!(
+            preset.merge(user).resolve().is_err(),
+            "a blank needle would match every title"
+        );
+    }
+
+    #[test]
     fn an_empty_terminal_entry_is_rejected() {
         let preset: Config = toml::from_str(PRESET).unwrap();
         let user = parse_user(

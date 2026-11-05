@@ -98,13 +98,14 @@ pub enum Effect {
         /// Where it ends.
         end: DateTime<Utc>,
     },
-    /// Move the open interval's start forward, used when input stopped earlier
-    /// than the event that reported it.
-    Trim {
+    /// Mark the open interval as passive, i.e. covered by an idle inhibitor.
+    ///
+    /// This is a storage effect and not just a flag on the in-memory copy: a
+    /// report reads the column, so keeping it only in memory would make
+    /// `exclude_passive` silently do nothing.
+    MarkPassive {
         /// The row to update.
         id: i64,
-        /// The corrected start.
-        start: DateTime<Utc>,
     },
 }
 
@@ -187,7 +188,8 @@ impl Tracker {
             return Vec::new();
         }
         self.paused = true;
-        self.idle = false;
+        // The idle flag is deliberately kept: after resuming, the tracker must
+        // still know the user is away, or it counts the time until input returns.
         self.close_at(clock.wall())
     }
 
@@ -258,38 +260,39 @@ impl Tracker {
     /// `idled_at` is when input actually stopped, which is one timeout before the
     /// event arrives.
     pub fn on_input_idle(&mut self, idled_at: DateTime<Utc>, clock: &dyn Clock) -> Vec<Effect> {
-        if self.idle_timeout.is_zero() || self.paused || self.idle {
+        if self.idle_timeout.is_zero() || self.idle {
             return Vec::new();
         }
         self.idle = true;
 
-        // An inhibitor means someone is watching or presenting. Keep counting, but
-        // say so, so a report can exclude it.
-        if self.inhibited {
-            if let Some(current) = &mut self.current {
-                current.live.passive = true;
-            }
-            return self.extend_to(clock.wall());
+        // While paused nothing is recorded, but the idleness still has to be
+        // remembered, or resuming would count time away as time spent.
+        if self.paused {
+            return Vec::new();
         }
 
+        // An inhibitor means someone is watching or presenting. Keep counting, but
+        // mark the row so a report can leave it out.
+        if self.inhibited {
+            let Some(current) = &mut self.current else {
+                return Vec::new();
+            };
+            current.live.passive = true;
+            let id = current.id;
+            let mut effects = vec![Effect::MarkPassive { id }];
+            effects.extend(self.extend_to(clock.wall()));
+            return effects;
+        }
+
+        // End the interval at the moment input stopped, which is when it really
+        // stopped being a useful measurement.
         let Some(current) = self.current.take() else {
             return Vec::new();
         };
-
-        let mut effects = Vec::new();
-        // Only trim when the interval really began before input stopped; a
-        // window focused during the idle period has nothing to give back.
-        if current.live.start < idled_at {
-            effects.push(Effect::Trim {
-                id: current.id,
-                start: idled_at,
-            });
-        }
-        effects.push(Effect::Close {
+        vec![Effect::Close {
             id: current.id,
             end: idled_at.max(current.live.start),
-        });
-        effects
+        }]
     }
 
     /// Input started again after being idle.
@@ -306,8 +309,13 @@ impl Tracker {
         let Some(focus) = self.focused.clone() else {
             return Vec::new();
         };
-        let live = self.make_live(&focus, clock.wall());
-        self.open(live)
+        let now = clock.wall();
+        // A row carries one `passive` flag, so an interval that was passive must
+        // not continue as an active one: close it at the moment input returned and
+        // start a fresh interval with the flag clear.
+        let mut effects = self.close_at(now);
+        effects.extend(self.open(self.make_live(&focus, now)));
+        effects
     }
 
     /// The idle inhibitor state changed.
@@ -320,11 +328,14 @@ impl Tracker {
 
         // An inhibitor appearing while input is idle means watching, not leaving.
         if active && self.idle && !self.paused {
-            if let Some(current) = &mut self.current {
-                current.live.passive = true;
-                return self.extend_to(clock.wall());
-            }
-            return Vec::new();
+            let Some(current) = &mut self.current else {
+                return Vec::new();
+            };
+            current.live.passive = true;
+            let id = current.id;
+            let mut effects = vec![Effect::MarkPassive { id }];
+            effects.extend(self.extend_to(clock.wall()));
+            return effects;
         }
 
         // It went away while input is still idle, so the watching stopped.
@@ -355,19 +366,38 @@ impl Tracker {
                 // plus however long it was genuinely awake afterwards. Counting the
                 // sleep would add hours of "screen time" to the day.
                 let cut = previous_wall + chrono::Duration::from_std(awake).unwrap_or_default();
-                return self.close_at(cut);
+                let mut effects = self.close_at(cut);
+                // Nothing else reopens the interval: waking produces no focus
+                // event, so without this the whole day after a suspend is lost
+                // until the user happens to switch windows.
+                if !self.paused
+                    && !self.idle
+                    && let Some(focus) = self.focused.clone()
+                {
+                    effects.extend(self.open(self.make_live(&focus, wall)));
+                }
+                return effects;
             }
         }
 
-        // A provisional focus loss is settled here: the grace period has passed and
-        // focus never came back, so the interval really did end when focus left.
-        if let Some(lost_at) = self.unfocused_since.take() {
-            return self.close_at(lost_at);
-        }
-
-        if self.paused || self.idle {
+        // A provisional focus loss is settled once the grace has really elapsed.
+        // Settling it on the first tick after any loss would cut the interval short
+        // when a tick happens to land inside the grace period.
+        if let Some(lost_at) = self.unfocused_since {
+            let grace = chrono::Duration::from_std(FOCUS_GAP_GRACE).unwrap_or_default();
+            if wall - lost_at >= grace {
+                self.unfocused_since = None;
+                return self.close_at(lost_at);
+            }
             return Vec::new();
         }
+
+        if self.paused {
+            return Vec::new();
+        }
+
+        // Extended even while idle: an inhibitor keeps the interval open then, and
+        // without a checkpoint a crash would lose the whole passive stretch.
         self.extend_to(wall)
     }
 
@@ -744,6 +774,172 @@ mod tests {
 
         let effects = tracker.on_focus(focus("kitty", "shell"), &clock);
         assert!(matches!(effects[0], Effect::Open(_)));
+    }
+
+    #[test]
+    fn idle_keeps_the_time_until_input_stopped() {
+        let clock = clock();
+        let mut tracker = idle_tracker();
+        tracker.on_focus(focus("kitty", "shell"), &clock);
+        tracker.adopt(1);
+
+        // Ten minutes of work, then five minutes of nothing. The event arrives
+        // now, at 10:05, but input stopped at 10:00.
+        clock.advance(Duration::from_secs(600));
+        let idled_at = clock.wall();
+        clock.advance(Duration::from_secs(300));
+        let effects = tracker.on_input_idle(idled_at, &clock);
+
+        // The interval must end where input stopped, and it must still cover the
+        // ten minutes before that.
+        assert_eq!(
+            effects,
+            vec![Effect::Close {
+                id: 1,
+                end: idled_at
+            }]
+        );
+    }
+
+    #[test]
+    fn a_suspend_reopens_the_interval_on_waking() {
+        let clock = clock();
+        let mut tracker = idle_tracker();
+        tracker.on_focus(focus("kitty", "shell"), &clock);
+        tracker.adopt(1);
+        tracker.on_tick(&clock);
+        clock.advance(Duration::from_secs(60));
+        tracker.on_tick(&clock);
+
+        // Eight hours of sleep: the wall clock moves, the monotonic one does not.
+        clock.advance_wall_only(Duration::from_secs(8 * 3600));
+        let effects = tracker.on_tick(&clock);
+
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Close { .. })),
+            "the interval must end at the sleep: {effects:?}"
+        );
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Open(_))),
+            "a new interval must start on waking, or the day is lost: {effects:?}"
+        );
+        assert!(tracker.live().is_some());
+    }
+
+    #[test]
+    fn pausing_while_idle_does_not_make_the_user_look_active() {
+        let clock = clock();
+        let mut tracker = idle_tracker();
+        tracker.on_focus(focus("kitty", "shell"), &clock);
+        tracker.adopt(1);
+        tracker.on_input_idle(clock.wall(), &clock);
+        assert!(tracker.idle());
+
+        tracker.pause(&clock);
+        assert!(tracker.idle(), "idleness must survive a pause");
+        tracker.resume();
+
+        // Coming back must not count the time away: nothing opens until input
+        // actually returns.
+        let effects = tracker.on_focus(focus("kitty", "shell"), &clock);
+        assert!(effects.is_empty(), "must wait for input: {effects:?}");
+        assert!(tracker.live().is_none());
+    }
+
+    #[test]
+    fn returning_after_a_passive_stretch_starts_a_clean_interval() {
+        let clock = clock();
+        let mut tracker = idle_tracker();
+        tracker.on_focus(focus("mpv", "video"), &clock);
+        tracker.adopt(1);
+        tracker.on_inhibitor(true, &clock);
+        clock.advance(Duration::from_secs(300));
+        tracker.on_input_idle(clock.wall() - chrono::Duration::seconds(300), &clock);
+        assert_eq!(tracker.live().map(|live| live.passive), Some(true));
+
+        clock.advance(Duration::from_secs(60));
+        let effects = tracker.on_input_active(&clock);
+
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Close { .. })),
+            "the passive stretch must be closed: {effects:?}"
+        );
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Open(_))),
+            "the active stretch must be a new row: {effects:?}"
+        );
+        assert_eq!(
+            tracker.live().map(|live| live.passive),
+            Some(false),
+            "a row cannot be both passive and active"
+        );
+    }
+
+    #[test]
+    fn becoming_passive_is_written_to_storage() {
+        let clock = clock();
+        let mut tracker = idle_tracker();
+        tracker.on_focus(focus("mpv", "video"), &clock);
+        tracker.adopt(1);
+        tracker.on_inhibitor(true, &clock);
+        clock.advance(Duration::from_secs(300));
+
+        let effects = tracker.on_input_idle(clock.wall() - chrono::Duration::seconds(300), &clock);
+        assert!(
+            effects.contains(&Effect::MarkPassive { id: 1 }),
+            "exclude_passive reads the column, so the flag has to reach storage: {effects:?}"
+        );
+    }
+
+    #[test]
+    fn a_tick_inside_the_grace_period_does_not_end_the_interval() {
+        let clock = clock();
+        let mut tracker = idle_tracker();
+        tracker.on_focus(focus("kitty", "shell"), &clock);
+        tracker.adopt(1);
+
+        // Focus blinks away, and a tick lands one second later, still inside the
+        // two-second grace.
+        tracker.on_focus(None, &clock);
+        clock.advance(Duration::from_secs(1));
+        let effects = tracker.on_tick(&clock);
+        assert!(
+            effects.is_empty(),
+            "the grace must still apply: {effects:?}"
+        );
+        assert!(tracker.live().is_some());
+
+        // Once the grace has passed, the next tick settles it.
+        clock.advance(Duration::from_secs(2));
+        let effects = tracker.on_tick(&clock);
+        assert!(matches!(effects[0], Effect::Close { .. }));
+    }
+
+    #[test]
+    fn a_tick_while_inhibited_still_checkpoints() {
+        let clock = clock();
+        let mut tracker = idle_tracker();
+        tracker.on_focus(focus("mpv", "video"), &clock);
+        tracker.adopt(1);
+        tracker.on_inhibitor(true, &clock);
+        tracker.on_input_idle(clock.wall(), &clock);
+
+        clock.advance(Duration::from_secs(60));
+        let effects = tracker.on_tick(&clock);
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Extend { .. })),
+            "a passive stretch needs checkpoints too, or a crash loses all of it: {effects:?}"
+        );
     }
 
     #[test]

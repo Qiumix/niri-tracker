@@ -4,9 +4,10 @@
 //! through the daemon) see a consistent picture because the daemon answers from
 //! the same connection it writes with.
 //!
-//! Timestamps are stored as Unix seconds in UTC and as text in the row's local
-//! date, which keeps range queries integer comparisons while letting a day
-//! boundary be exact without timezone arithmetic at read time.
+//! Timestamps are stored as Unix seconds in UTC, so range queries are integer
+//! comparisons. The `day` column records the local date the stretch began on; it
+//! is not what a query filters on, because a stretch can cross midnight and then
+//! belongs to both days. Queries select by overlap and the report clips.
 
 mod session;
 
@@ -137,18 +138,10 @@ impl Store {
         Ok(())
     }
 
-    /// Rewrite a row's start, used when a stretch is cut back to the moment
-    /// input actually stopped.
-    pub fn set_start(&self, id: i64, start: DateTime<Utc>) -> Result<(), Error> {
-        let day = start
-            .with_timezone(&chrono::Local)
-            .date_naive()
-            .format("%Y-%m-%d")
-            .to_string();
-        self.conn.execute(
-            "UPDATE session SET start = ?1, day = ?2 WHERE id = ?3",
-            params![start.timestamp(), day, id],
-        )?;
+    /// Mark a row as covered by an idle inhibitor.
+    pub fn mark_passive(&self, id: i64) -> Result<(), Error> {
+        self.conn
+            .execute("UPDATE session SET passive = 1 WHERE id = ?1", params![id])?;
         Ok(())
     }
 
@@ -167,32 +160,38 @@ impl Store {
         Ok(changed)
     }
 
-    /// Read every finished stretch whose local day falls in the inclusive range.
+    /// Read every finished stretch overlapping the inclusive local-day range.
+    ///
+    /// Two deliberate choices:
+    ///
+    /// - Only finished rows. The stretch still being recorded is open, and its
+    ///   end is merely the last checkpoint; the caller passes the live copy in
+    ///   separately, so returning it here would count it twice.
+    /// - Selected by overlap, not by the start's day. A stretch that starts at
+    ///   23:30 and ends at 00:30 belongs to both days, and asking for the second
+    ///   one has to find it.
     pub fn range(&self, from: NaiveDate, to: NaiveDate) -> Result<Vec<Session>, Error> {
+        let window_start = local_midnight(from).timestamp();
+        let window_end = local_midnight(to.succ_opt().unwrap_or(to)).timestamp();
+
         let mut stmt = self.conn.prepare(
             "SELECT id, start, end, app_id, title, passive, closed \
-			 FROM session WHERE day BETWEEN ?1 AND ?2 ORDER BY start",
+			 FROM session WHERE closed = 1 AND end > ?1 AND start < ?2 ORDER BY start",
         )?;
 
-        let rows = stmt.query_map(
-            params![
-                from.format("%Y-%m-%d").to_string(),
-                to.format("%Y-%m-%d").to_string()
-            ],
-            |row| {
-                let start_secs: i64 = row.get(1)?;
-                let end_secs: i64 = row.get(2)?;
-                Ok(Session {
-                    id: row.get(0)?,
-                    start: DateTime::from_timestamp(start_secs, 0).unwrap_or_default(),
-                    end: DateTime::from_timestamp(end_secs, 0).unwrap_or_default(),
-                    app_id: row.get(3)?,
-                    title: row.get(4)?,
-                    passive: row.get::<_, i64>(5)? != 0,
-                    closed: row.get::<_, i64>(6)? != 0,
-                })
-            },
-        )?;
+        let rows = stmt.query_map(params![window_start, window_end], |row| {
+            let start_secs: i64 = row.get(1)?;
+            let end_secs: i64 = row.get(2)?;
+            Ok(Session {
+                id: row.get(0)?,
+                start: DateTime::from_timestamp(start_secs, 0).unwrap_or_default(),
+                end: DateTime::from_timestamp(end_secs, 0).unwrap_or_default(),
+                app_id: row.get(3)?,
+                title: row.get(4)?,
+                passive: row.get::<_, i64>(5)? != 0,
+                closed: row.get::<_, i64>(6)? != 0,
+            })
+        })?;
 
         let mut sessions = Vec::new();
         for row in rows {
@@ -206,8 +205,8 @@ impl Store {
     /// Returns how many rows went away.
     pub fn delete_before(&self, before: NaiveDate) -> Result<usize, Error> {
         let changed = self.conn.execute(
-            "DELETE FROM session WHERE day < ?1 AND closed = 1",
-            params![before.format("%Y-%m-%d").to_string()],
+            "DELETE FROM session WHERE end <= ?1 AND closed = 1",
+            params![local_midnight(before).timestamp()],
         )?;
         Ok(changed)
     }
@@ -323,6 +322,88 @@ mod tests {
         assert_eq!(store.range(first, first).unwrap().len(), 1);
         assert_eq!(store.range(second, second).unwrap().len(), 1);
         assert_eq!(store.range(first, second).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn range_ignores_the_row_that_is_still_open() {
+        let store = store();
+        let start = Utc.with_ymd_and_hms(2026, 11, 5, 10, 0, 0).unwrap();
+
+        // A finished stretch and one still being recorded, as the daemon leaves it.
+        let closed = store.begin(&live("kitty", start)).unwrap();
+        store
+            .close(closed, start + chrono::Duration::minutes(5))
+            .unwrap();
+        let _open = store
+            .begin(&live("firefox", start + chrono::Duration::minutes(5)))
+            .unwrap();
+
+        let day = NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+        let sessions = store.range(day, day).unwrap();
+        assert_eq!(
+            sessions.len(),
+            1,
+            "the open row is passed separately, not read here"
+        );
+        assert_eq!(sessions[0].app_id, "kitty");
+    }
+
+    #[test]
+    fn a_stretch_crossing_midnight_is_found_by_both_days() {
+        let store = store();
+        // 23:30 on the 5th to 00:30 on the 6th, local time.
+        let start = local_midnight(NaiveDate::from_ymd_opt(2026, 11, 6).unwrap())
+            - chrono::Duration::minutes(30);
+        let id = store.begin(&live("kitty", start)).unwrap();
+        store.close(id, start + chrono::Duration::hours(1)).unwrap();
+
+        let before = NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+        let after = NaiveDate::from_ymd_opt(2026, 11, 6).unwrap();
+        assert_eq!(
+            store.range(before, before).unwrap().len(),
+            1,
+            "belongs to the 5th"
+        );
+        assert_eq!(
+            store.range(after, after).unwrap().len(),
+            1,
+            "and to the 6th"
+        );
+    }
+
+    #[test]
+    fn passive_is_written_and_read_back() {
+        let store = store();
+        let start = Utc.with_ymd_and_hms(2026, 11, 5, 10, 0, 0).unwrap();
+        let id = store.begin(&live("mpv", start)).unwrap();
+        store.mark_passive(id).unwrap();
+        store
+            .close(id, start + chrono::Duration::minutes(5))
+            .unwrap();
+
+        let day = NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+        let sessions = store.range(day, day).unwrap();
+        assert!(
+            sessions[0].passive,
+            "exclude_passive depends on this column"
+        );
+    }
+
+    #[test]
+    fn deletion_is_by_end_not_by_start_day() {
+        let store = store();
+        // Started late on the 5th, ended early on the 6th.
+        let start = local_midnight(NaiveDate::from_ymd_opt(2026, 11, 6).unwrap())
+            - chrono::Duration::minutes(30);
+        let id = store.begin(&live("a", start)).unwrap();
+        store
+            .close(id, start + chrono::Duration::minutes(60))
+            .unwrap();
+
+        // Cutting off everything before the 6th must not delete a stretch that
+        // reaches into it.
+        let cutoff = NaiveDate::from_ymd_opt(2026, 11, 6).unwrap();
+        assert_eq!(store.delete_before(cutoff).unwrap(), 0);
     }
 
     #[test]

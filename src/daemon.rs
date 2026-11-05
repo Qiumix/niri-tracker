@@ -91,6 +91,19 @@ pub fn run(config: &Resolved, config_path: &Path) -> Result<(), Error> {
     // checkpoint, so finishing them is all that is needed.
     let dangling = store.close_dangling()?;
 
+    // Applied at startup rather than on a timer: a daemon that runs for weeks
+    // should still honour the configured retention, and doing it once per start is
+    // enough for a setting measured in months.
+    if !config.retention.is_zero() {
+        let keep = chrono::Duration::from_std(config.retention).unwrap_or_default();
+        let cutoff = (chrono::Local::now() - keep).date_naive();
+        match store.delete_before(cutoff) {
+            Ok(0) => {}
+            Ok(removed) => log_info(&format!("removed {removed} intervals older than {cutoff}")),
+            Err(err) => log_info(&format!("cannot apply retention: {err}")),
+        }
+    }
+
     let paths = crate::ipc::InstancePaths::for_pid(&runtime_dir, std::process::id());
     let server = Server::bind(&paths.socket).map_err(|source| Error::Bind {
         path: paths.socket.clone(),
@@ -326,6 +339,15 @@ impl Daemon {
         };
         let clock = SystemClock;
 
+        // Settle the inhibitor before acting on idleness: whether an idle stretch
+        // counts depends on it, and the derived answer needs both notifications to
+        // have been dispatched.
+        let inhibited = idle.state().inhibited();
+        if inhibited != self.tracker.inhibited() {
+            log_info(&format!("idle: inhibitor {inhibited}"));
+            self.decision(|tracker| tracker.on_inhibitor(inhibited, &clock));
+        }
+
         for event in events {
             // Logged because these transitions are invisible otherwise: a user
             // wondering why their report is short needs to see idle detection
@@ -342,12 +364,8 @@ impl Daemon {
                 IdleEvent::InputActive => {
                     self.decision(|tracker| tracker.on_input_active(&clock));
                 }
-                IdleEvent::Inhibited => {
-                    self.decision(|tracker| tracker.on_inhibitor(true, &clock));
-                }
-                IdleEvent::Uninhibited => {
-                    self.decision(|tracker| tracker.on_inhibitor(false, &clock));
-                }
+                // Already handled above, before idleness.
+                IdleEvent::InhibitorChanged => {}
             }
         }
     }
@@ -409,9 +427,9 @@ impl Daemon {
                         log_info(&format!("cannot close an interval: {err}"));
                     }
                 }
-                Effect::Trim { id, start } => {
-                    if let Err(err) = self.store.set_start(id, start) {
-                        log_info(&format!("cannot trim an interval: {err}"));
+                Effect::MarkPassive { id } => {
+                    if let Err(err) = self.store.mark_passive(id) {
+                        log_info(&format!("cannot mark an interval passive: {err}"));
                     }
                 }
             }
@@ -430,8 +448,18 @@ impl Daemon {
     fn reload(&mut self) -> Result<(), String> {
         match crate::config::load_from(&self.config_path) {
             Ok(resolved) => {
+                // Close whatever is open before the tracker is replaced: the new
+                // one starts with no interval, so the row would be left open and
+                // the stretch recorded since the last checkpoint would be lost.
+                let clock = SystemClock;
+                self.decision(|tracker| tracker.pause(&clock));
+
                 self.config = resolved.clone();
                 self.tracker = Tracker::new(resolved.idle_timeout, resolved.terminals.clone());
+                // Recording resumes under the new settings; the pause above was
+                // only a way to close the interval cleanly.
+                self.decision(|tracker| tracker.resume());
+                self.refresh_focus();
                 // Restart idle detection so a changed timeout takes effect.
                 self.idle = None;
                 if !resolved.idle_timeout.is_zero() {

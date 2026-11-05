@@ -73,6 +73,20 @@ This is also why the protocol version matters: version 1 lacks
 `get_input_idle_notification`, so the comparison is impossible. The daemon refuses
 version 1 rather than silently degrading.
 
+## Stories are clipped, and may cross midnight
+
+A stretch is recorded as one row, and a row can span midnight. Reports therefore
+select by overlap — `end > from AND start < to` — and clip each stretch to the
+requested window before crediting it. A stretch running from 23:30 to 00:30 counts
+half an hour towards each day, and asking for the second day finds it.
+
+Grouping by day or hour splits the clipped stretch at local boundaries for the
+same reason: a two-hour stretch must not appear as a single row under the hour it
+happened to begin in.
+
+The `day` column still exists, but only as the local date a stretch began on; it
+is not a filter.
+
 ## Cutting back to when input stopped
 
 The `idled` event arrives **one timeout after** input actually stopped. It has to:

@@ -193,6 +193,13 @@ pub enum ResolveError {
     /// Two aliases shared a name.
     #[error("two [[alias]] entries are both named {0:?}")]
     AliasDuplicate(String),
+
+    /// An `[[alias]]` entry had a blank `titles` needle.
+    #[error("[[alias]] entry #{index} has a blank `titles` entry, which would match every title")]
+    AliasEmptyTitle {
+        /// Its index in the list, counting from one.
+        index: usize,
+    },
 }
 
 impl Config {
@@ -258,6 +265,11 @@ impl Config {
             }
             if seen.contains(&entry.name.as_str()) {
                 return Err(ResolveError::AliasDuplicate(entry.name.clone()));
+            }
+            // An empty needle matches every title, which would silently fold the
+            // whole application into the alias.
+            if entry.titles.iter().any(|title| title.trim().is_empty()) {
+                return Err(ResolveError::AliasEmptyTitle { index: offset + 1 });
             }
             seen.push(&entry.name);
         }

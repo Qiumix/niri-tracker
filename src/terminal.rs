@@ -47,7 +47,7 @@ fn find_foreground(table: &HashMap<u32, ProcEntry>, root_pid: u32) -> Option<u32
         return None;
     }
 
-    let mut candidates: Vec<&ProcEntry> = table
+    let foreground: Vec<&ProcEntry> = table
         .values()
         .filter(|entry| entry.pid != root_pid)
         .filter(|entry| entry.tty_nr != 0)
@@ -55,12 +55,23 @@ fn find_foreground(table: &HashMap<u32, ProcEntry>, root_pid: u32) -> Option<u32
         .filter(|entry| is_descendant(table, entry.pid, root_pid))
         .collect();
 
-    // Two tabs run two foreground jobs on two ptys, and the compositor does not
-    // say which tab is visible. The most recently started process is the better
-    // guess: starting a job is what makes a tab interesting.
-    candidates.sort_by_key(|entry| entry.pid);
+    // The leader of the foreground process group is the job itself. Everything
+    // else in that group is a child of it and merely inherited the group, so
+    // picking the highest pid would name `node` for an editor that spawned a
+    // language server. Several tabs mean several leaders, and the newest is the
+    // better guess: starting a job is what makes a tab interesting.
+    let newest_leader = foreground
+        .iter()
+        .filter(|entry| entry.pid == entry.pgrp)
+        .map(|entry| entry.pid)
+        .max();
+    if newest_leader.is_some() {
+        return newest_leader;
+    }
 
-    candidates.last().map(|entry| entry.pid)
+    // No leader is visible, which happens when it exited while its children carry
+    // on. Fall back to the newest process in the group.
+    foreground.iter().map(|entry| entry.pid).max()
 }
 
 /// Whether `pid` descends from `ancestor`.
@@ -232,6 +243,30 @@ mod tests {
             entry(201, 100, 201, 201, 8),
         ]);
         assert_eq!(find_foreground(&table, 100), Some(201));
+    }
+
+    #[test]
+    fn the_group_leader_is_chosen_over_its_children() {
+        // nvim (102) leads the foreground group and spawns node (110), which
+        // inherits the group. The answer must be nvim, not node.
+        let table = table(vec![
+            entry(100, 1, 100, -1, 0),
+            entry(101, 100, 101, 102, 7),
+            entry(102, 101, 102, 102, 7),
+            entry(110, 102, 102, 102, 7),
+        ]);
+        assert_eq!(find_foreground(&table, 100), Some(102));
+    }
+
+    #[test]
+    fn without_a_leader_the_newest_process_wins() {
+        // The group leader (999) has exited; two of its children remain.
+        let table = table(vec![
+            entry(100, 1, 100, -1, 0),
+            entry(110, 100, 999, 999, 7),
+            entry(120, 100, 999, 999, 7),
+        ]);
+        assert_eq!(find_foreground(&table, 100), Some(120));
     }
 
     #[test]

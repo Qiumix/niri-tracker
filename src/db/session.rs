@@ -42,10 +42,12 @@ impl Session {
         }
     }
 
-    /// The local date the stretch belongs to.
+    /// The local date the stretch *began* on.
     ///
-    /// Rows never straddle midnight, so either endpoint answers correctly; the
-    /// start is used because that is what the stored-day rule guarantees.
+    /// A stretch may well cross midnight, so this is the start's day and nothing
+    /// more. Reports do not use it to decide which day a stretch belongs to; they
+    /// clip and split by instant, which is why a stretch crossing midnight appears
+    /// in both days with only the part that falls inside each.
     #[must_use]
     pub fn local_date(&self) -> NaiveDate {
         self.start.with_timezone(&Local).date_naive()

@@ -7,7 +7,7 @@ alternatives that were ruled out.
 ## Build and check
 
 ```sh
-cargo test                     # 112 tests, no external services
+cargo test                     # 130 tests, no external services
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 
