@@ -300,11 +300,17 @@ fn acknowledge(response: niri_tracker::ipc::Response) -> Result<ExitCode, BoxErr
 }
 
 /// Write a completion script for one shell.
+///
+/// A reader that stops early — `| head`, `| less` then quit — closes the pipe,
+/// and that is a normal way to read the output rather than a failure. It is
+/// reported as success so a pipeline does not look broken.
 fn completions(args: CompletionArgs) -> Result<ExitCode, BoxError> {
 	let mut stdout = std::io::stdout().lock();
-	write_completions(args.shell, &mut stdout);
-	stdout.flush()?;
-	Ok(ExitCode::SUCCESS)
+	match write_completions(args.shell, &mut stdout).and_then(|()| stdout.flush()) {
+		Ok(()) => Ok(ExitCode::SUCCESS),
+		Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => Ok(ExitCode::SUCCESS),
+		Err(err) => Err(err.into()),
+	}
 }
 
 /// Write a commented configuration file, refusing to clobber one by default.

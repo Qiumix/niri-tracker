@@ -207,10 +207,42 @@ pub fn command() -> clap::Command {
 /// The program name is passed explicitly rather than taken from the crate name:
 /// the two happen to agree today, and a rename should not silently produce a
 /// completion script that completes a command nobody has.
-pub fn write_completions(shell: Shell, out: &mut dyn std::io::Write) {
+///
+/// Errors are returned rather than panicking, which is what `clap_complete`'s
+/// own `generate` does. A completion script is usually piped into `head`, `less`
+/// or a file, and a reader that stops early closes the pipe: that is a normal
+/// way to read a few lines, not a reason to abort with a backtrace.
+/// The script itself, as text.
+///
+/// Generated into memory rather than straight into the caller's writer because
+/// every shell generator inside `clap_complete` ends its formatting with
+/// `write!(...).expect(...)`: a write failure anywhere in the middle becomes a
+/// panic before the fallible API ever sees it. Rendering to a `Vec<u8>` cannot
+/// fail, so the writing is entirely ours and a closed pipe is just a return
+/// value.
+#[must_use]
+pub fn completion_script(shell: Shell) -> Vec<u8> {
 	let mut cmd = command();
+	cmd.set_bin_name("niri-tracker");
 	let generator: clap_complete::Shell = shell.into();
-	clap_complete::generate(generator, &mut cmd, "niri-tracker", out);
+
+	let mut buffer = Vec::new();
+	clap_complete::generate(generator, &mut cmd, "niri-tracker", &mut buffer);
+	buffer
+}
+
+/// Write a completion script for `shell` into `out`.
+///
+/// The program name is passed explicitly rather than taken from the crate name:
+/// the two happen to agree today, and a rename should not silently produce a
+/// completion script that completes a command nobody has.
+///
+/// Errors are returned rather than panicking. A completion script is usually
+/// piped into `head` or `less`, and a reader that stops early closes the pipe:
+/// that is a normal way to read a few lines, not a reason to abort with a
+/// backtrace.
+pub fn write_completions(shell: Shell, out: &mut dyn std::io::Write) -> std::io::Result<()> {
+	out.write_all(&completion_script(shell))
 }
 
 #[cfg(test)]
@@ -226,7 +258,7 @@ mod tests {
 	fn every_shell_produces_output() {
 		for shell in [Shell::Bash, Shell::Fish, Shell::Zsh] {
 			let mut buf = Vec::new();
-			write_completions(shell, &mut buf);
+			write_completions(shell, &mut buf).expect("writes into a Vec");
 			let text = String::from_utf8(buf).expect("completions are UTF-8");
 			assert!(!text.is_empty(), "{shell:?} produced nothing");
 			assert!(
@@ -234,6 +266,30 @@ mod tests {
 				"{shell:?} does not name the program"
 			);
 		}
+	}
+
+	#[test]
+	fn a_closed_pipe_is_an_error_not_a_panic() {
+		// A reader that stops early, as `| head` does, closes the pipe. The write
+		// must come back as an error: panicking would print a backtrace for a
+		// perfectly ordinary way to read the output.
+		struct Closed;
+
+		impl std::io::Write for Closed {
+			fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+				Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+			}
+
+			fn flush(&mut self) -> std::io::Result<()> {
+				Ok(())
+			}
+		}
+
+		let result = write_completions(Shell::Fish, &mut Closed);
+		assert_eq!(
+			result.expect_err("a closed pipe must be reported").kind(),
+			std::io::ErrorKind::BrokenPipe
+		);
 	}
 
 	#[test]
