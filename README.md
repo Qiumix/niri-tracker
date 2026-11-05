@@ -11,12 +11,23 @@ marks the time as passive.
 
 ```text
 $ niri-tracker report
-floorp       2h 41m
-nvim         1h 12m
-yazi           28m
-qq             19m
+QQ                      37m 15s
+floorp                  20m 49s
+fish                    4m 41s
+nvim                    2m 47s
+yazi                    36s
+niri-tracker            22s
+top.imsyy.splayer_next  17s
+xargs                   9s
+cargo                   4s
+less                    4s
+glow                    3s
+fzf                     2s
+rustc                   2s
+file                    1s
+sh                      1s
 
-Total        4h 40m
+Total                   1h 7m 13s
 ```
 
 ## Why not just sample the active window?
