@@ -9,7 +9,7 @@ you stop touching the keyboard and mouse, it stops counting — unless something
 is holding the screen awake to play a video, in which case it keeps counting and
 marks the time as passive.
 
-```
+```text
 $ niri-tracker report
 floorp       2h 41m
 nvim         1h 12m

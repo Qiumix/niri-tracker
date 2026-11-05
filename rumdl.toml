@@ -1,0 +1,21 @@
+# Markdown linting, matching the rest of this repository's taste.
+#
+# The default line length is 80, which is too narrow for the tables in
+# docs/protocol.md and README.md: wrapping those makes them impossible to read in
+# a terminal or a diff. 100 leaves prose readable and lets a table row hold a
+# real sentence.
+
+[global]
+line-length = 100
+
+[MD013]
+# Tables and code blocks are exempt by default; long URLs in prose are the one
+# case that still trips this, and they cannot be wrapped meaningfully.
+code-blocks = false
+headings    = false
+tables      = false
+
+[MD033]
+# A little inline HTML is worth it for <kbd> and for a table cell that needs a
+# line break.
+allowed-elements = ["kbd", "br"]

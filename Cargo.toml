@@ -13,11 +13,7 @@ version     = "0.1.0"
 
 # Everything a `cargo install` cannot use is left out of the crate, which keeps
 # it to the code and the documents a reader of the source would want.
-exclude = [
-	".github/",
-	"packaging/",
-	"taplo.toml",
-]
+exclude = [".github/", "packaging/", "taplo.toml"]
 
 [dependencies]
 calloop                = "0.14"
@@ -36,6 +32,6 @@ wayland-client         = "0.31"
 wayland-protocols      = { version = "0.32", features = ["client", "staging"] }
 
 [package.metadata.binstall]
-pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.gz"
 bin-dir = "{ name }-{ target }/{ bin }"
 pkg-fmt = "tgz"
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.gz"

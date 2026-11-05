@@ -7,8 +7,8 @@
 # import grouping) would print a warning on every run for a stable toolchain,
 # and a linter that cries wolf is worse than one that checks less.
 edition                  = "2024"
-style_edition            = "2024"
 hard_tabs                = true
 newline_style            = "Unix"
+style_edition            = "2024"
 use_field_init_shorthand = true
 use_try_shorthand        = true

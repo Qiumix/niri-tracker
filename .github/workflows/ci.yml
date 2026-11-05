@@ -18,8 +18,26 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Formatting
+      - name: Formatting (Rust)
         run: cargo fmt --all --check
+
+      # TOML and Markdown have formatters too, and a document that drifts from
+      # them turns every later diff into whitespace noise. Installed from their
+      # release binaries rather than `cargo install`, which would spend several
+      # minutes compiling a linter on every run.
+      - name: Install document formatters
+        uses: taiki-e/install-action@v2
+        with:
+          tool: taplo-cli,rumdl
+
+      # The file list is explicit because taplo has no exclude option and would
+      # otherwise walk into target/, where `cargo package` leaves a copy of this
+      # repository with its own Cargo.toml.
+      - name: Formatting (TOML)
+        run: taplo fmt --check Cargo.toml preset/config.toml taplo.toml rustfmt.toml rumdl.toml
+
+      - name: Formatting (Markdown)
+        run: rumdl check .
 
       - name: Clippy
         run: cargo clippy --all-targets --locked -- -D warnings

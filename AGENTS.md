@@ -10,9 +10,17 @@ alternatives that were ruled out.
 cargo test                     # 100 tests, no external services
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
+
+# Documents too: TOML via taplo, Markdown via rumdl.
+taplo fmt --check Cargo.toml preset/config.toml taplo.toml rustfmt.toml rumdl.toml
+rumdl check .
 ```
 
-All three must be clean before a commit. CI runs exactly these.
+All of these must be clean before a commit. CI runs exactly these.
+
+`taplo` needs its file list given explicitly: it has no exclude option and would
+otherwise reformat the copy of this repository that `cargo package` leaves under
+`target/`.
 
 The crate uses edition 2024 and needs a recent stable toolchain. Tabs, not spaces
 (`rustfmt.toml` sets `hard_tabs`).

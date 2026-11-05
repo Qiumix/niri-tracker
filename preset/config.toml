@@ -39,7 +39,16 @@ strip_counters = true
 # whatever runs inside them. These entries are looked up by app_id and resolved
 # to the foreground process on the terminal's controlling pty.
 [[terminal]]
-app_ids = ["kitty", "alacritty", "foot", "footclient", "wezterm", "ghostty", "konsole", "gnome-terminal"]
+app_ids = [
+  "kitty",
+  "alacritty",
+  "foot",
+  "footclient",
+  "wezterm",
+  "ghostty",
+  "konsole",
+  "gnome-terminal",
+]
 # Credit the foreground process with the time instead of the terminal itself.
 split = true
 # When the foreground process cannot be read (permissions, a race), what to
