@@ -7,7 +7,7 @@ alternatives that were ruled out.
 ## Build and check
 
 ```sh
-cargo test                     # 100 tests, no external services
+cargo test                     # 101 tests, no external services
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 
@@ -125,9 +125,24 @@ reaction is `Tracker::on_inhibitor`.
 
 ## Commits
 
-Imperative subject, a body that says why rather than what. The bodies in
-`git log` are the model: they state the problem, the decision, and what was
-rejected.
+[Conventional Commits](https://www.conventionalcommits.org/), with a body that
+says why rather than what.
+
+```text
+<type>(<scope>): <imperative summary>
+
+<what the problem was, what was decided, and what was rejected>
+```
+
+Types: `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `build`, `ci`,
+`chore`. Scope is optional and names the area, as in `fix(ipc):` or
+`docs(readme):`. A body that explains the reasoning is the norm here, not an
+exception: the reasons a change was made are the part that a diff cannot carry.
+
+BREAKING CHANGE goes in the footer, and a breaking change to the wire protocol
+also bumps `INFO_VERSION`.
+
+(The first four commits predate this convention and are left as they are.)
 
 ## Releasing
 
