@@ -29,7 +29,7 @@ use std::time::Duration;
 use wayland_client::globals::{GlobalList, GlobalListContents, registry_queue_init};
 use wayland_client::protocol::wl_registry::WlRegistry;
 use wayland_client::protocol::wl_seat::WlSeat;
-use wayland_client::{Connection, Dispatch, EventQueue, Proxy as _, QueueHandle};
+use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
 use wayland_protocols::ext::idle_notify::v1::client::ext_idle_notification_v1::{
 	Event as NotificationEvent, ExtIdleNotificationV1,
 };
@@ -82,6 +82,12 @@ pub enum Input {
 }
 
 /// A transition worth reacting to, in the order it happened.
+///
+/// The inhibitor variants carry the fact directly rather than leaving the caller
+/// to derive it from [`IdleState::inhibited`]: the two notifications arrive in
+/// whichever order the compositor chooses, so "input has not gone quiet yet but
+/// an inhibitor just appeared" is a real state that the derived answer gets
+/// wrong.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdleEvent {
 	/// Input went quiet after the timeout.
@@ -193,12 +199,31 @@ impl Idle {
 		&self.state
 	}
 
-	/// Dispatch whatever the compositor has already sent, without blocking.
+	/// Read and dispatch whatever the compositor has sent, without blocking.
 	///
 	/// Returns the transitions in order. The daemon calls this and acts on each,
 	/// because "input just went quiet" and "an inhibitor appeared" need different
 	/// handling even though both arrive as events.
+	///
+	/// Reading and dispatching are two steps and both are required:
+	/// `dispatch_pending` only handles events already sitting in the queue's
+	/// buffer, so without a read first nothing ever arrives and the daemon would
+	/// silently never learn that the user left.
 	pub fn poll(&mut self) -> Result<Vec<IdleEvent>, Error> {
+		// Flush our own requests before reading, so the compositor has them.
+		self.queue
+			.flush()
+			.map_err(|err| Error::Protocol(err.to_string()))?;
+
+		// `prepare_read` returns `None` when another thread holds the read guard,
+		// in which case dispatching what is buffered is all that can be done.
+		if let Some(guard) = self.queue.prepare_read()
+			&& let Err(err) = guard.read()
+			&& !is_would_block(&err)
+		{
+			return Err(Error::Protocol(err.to_string()));
+		}
+
 		self.queue
 			.dispatch_pending(&mut self.state)
 			.map_err(|err| Error::Protocol(err.to_string()))?;
@@ -222,6 +247,19 @@ impl Idle {
 	}
 }
 
+/// Whether an error is simply "nothing has arrived yet".
+///
+/// A non-blocking read that finds an empty socket reports this, and it is the
+/// normal state of affairs in a poll loop rather than a failure.
+fn is_would_block(error: &wayland_client::backend::WaylandError) -> bool {
+	match error {
+		wayland_client::backend::WaylandError::Io(err) => {
+			err.kind() == std::io::ErrorKind::WouldBlock
+		}
+		_ => false,
+	}
+}
+
 /// Bind the notifier, refusing a version too old for input-only notifications.
 fn bind_notifier(
 	globals: &GlobalList,
@@ -238,9 +276,15 @@ fn bind_notifier(
 			too_old = true;
 			continue;
 		}
-		let version = global.version.min(REQUIRED_VERSION);
+		// The second argument is a *version* range, not the global's name:
+		// `GlobalList::bind` looks the interface up itself and binds the lower of
+		// the advertised and the requested version.
 		let bound = globals
-			.bind::<ExtIdleNotifierV1, IdleState, ()>(handle, global.name..=version, ())
+			.bind::<ExtIdleNotifierV1, IdleState, ()>(
+				handle,
+				REQUIRED_VERSION..=REQUIRED_VERSION,
+				(),
+			)
 			.map_err(|err| Error::Protocol(err.to_string()))?;
 		found = Some(bound);
 	}
@@ -261,8 +305,10 @@ fn bind_seat(globals: &GlobalList, handle: &QueueHandle<IdleState>) -> Result<Wl
 		if global.interface != SEAT_INTERFACE {
 			continue;
 		}
+		// Version 1 is enough: this module only needs the seat's identity to
+		// attach idle notifications to, never any of its input events.
 		let bound = globals
-			.bind::<WlSeat, IdleState, ()>(handle, global.name..=global.version.min(9), ())
+			.bind::<WlSeat, IdleState, ()>(handle, 1..=9, ())
 			.map_err(|err| Error::Protocol(err.to_string()))?;
 		return Ok(bound);
 	}
@@ -349,12 +395,6 @@ impl Dispatch<ExtIdleNotificationV1, InhibitedMarker> for IdleState {
 			_ => {}
 		}
 	}
-}
-
-/// The protocol revision the notifier object was bound at, for logging.
-#[must_use]
-pub fn notifier_version(notifier: &ExtIdleNotifierV1) -> u32 {
-	notifier.version()
 }
 
 #[cfg(test)]

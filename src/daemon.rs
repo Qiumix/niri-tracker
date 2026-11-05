@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 
-use crate::compositor::idle::{Idle, IdleEvent, IdleState};
+use crate::compositor::idle::{Idle, IdleEvent};
 use crate::compositor::niri::{self, Watch};
 use crate::config::Resolved;
 use crate::db::{Live, Store};
@@ -151,8 +151,6 @@ struct Daemon {
 	reader: Option<std::thread::JoinHandle<()>>,
 	/// Idle detection, once started.
 	idle: Option<Idle>,
-	/// The last idle state acted on, so only changes cause work.
-	last_idle: IdleState,
 	/// Whether the daemon should stop.
 	stopping: bool,
 }
@@ -168,7 +166,6 @@ impl Daemon {
 			events: None,
 			reader: None,
 			idle: None,
-			last_idle: IdleState::default(),
 			stopping: false,
 		}
 	}
@@ -327,10 +324,13 @@ impl Daemon {
 				return;
 			}
 		};
-		let state = idle.state().clone();
 		let clock = SystemClock;
 
 		for event in events {
+			// Logged because these transitions are invisible otherwise: a user
+			// wondering why their report is short needs to see idle detection
+			// doing something.
+			log_info(&format!("idle: {event:?}"));
 			match event {
 				IdleEvent::InputIdle => {
 					// The event arrives one timeout after input stopped, so the
@@ -342,13 +342,14 @@ impl Daemon {
 				IdleEvent::InputActive => {
 					self.decision(|tracker| tracker.on_input_active(&clock));
 				}
-				IdleEvent::Inhibited | IdleEvent::Uninhibited => {
-					let inhibited = state.inhibited();
-					self.decision(|tracker| tracker.on_inhibitor(inhibited, &clock));
+				IdleEvent::Inhibited => {
+					self.decision(|tracker| tracker.on_inhibitor(true, &clock));
+				}
+				IdleEvent::Uninhibited => {
+					self.decision(|tracker| tracker.on_inhibitor(false, &clock));
 				}
 			}
 		}
-		self.last_idle = state;
 	}
 
 	/// Ask the tracker what to do, then do it.
