@@ -1,12 +1,17 @@
 [Unit]
 Description=Screen time tracking for the niri compositor
-Documentation=https://github.com/qiumix/niri-tracker
+Documentation=https://github.com/Qiumix/niri-tracker
 
 # One daemon per Wayland session, so it belongs to the session target rather
 # than default.target: it must not outlive the compositor it is watching.
 PartOf=graphical-session.target
 Requires=niri.service
 After=niri.service graphical-session.target
+
+# A misconfiguration must surface, not restart forever. Without these a broken
+# install loops every RestartSec until someone notices the battery drain.
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -25,10 +30,17 @@ Slice=background.slice
 Nice=10
 IOSchedulingClass=idle
 
-# Nothing it does needs write access outside its own data directory.
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=%h/.local/share/niri-tracker
+# The control socket lives here. RuntimeDirectory both creates it and exempts it
+# from the read-only system view, which is why the daemon can bind inside it.
+RuntimeDirectory=niri-tracker
+
+# `strict` would also make $HOME read-only. The daemon creates its data directory
+# on first run, and pointing ReadWritePaths at a directory that does not exist yet
+# does not work: systemd puts a temporary filesystem over the missing path, so the
+# database is written where it vanishes on restart. `full` protects /usr, /boot and
+# /etc — enough, and it leaves the daemon able to create its own directory.
+ProtectSystem=full
+
 PrivateTmp=yes
 NoNewPrivileges=yes
 
