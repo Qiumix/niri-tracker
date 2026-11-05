@@ -28,72 +28,72 @@ pub const INFO_VERSION: u32 = 1;
 /// Metadata a daemon publishes next to its socket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstanceInfo {
-	/// Which Wayland session this serves, normalised to a basename.
-	pub wayland_display: String,
-	/// Absolute path to the socket.
-	pub socket: PathBuf,
-	/// Daemon process id.
-	pub pid: u32,
-	/// The daemon's start time, in Unix seconds, so the newest can be chosen.
-	pub started: i64,
+    /// Which Wayland session this serves, normalised to a basename.
+    pub wayland_display: String,
+    /// Absolute path to the socket.
+    pub socket: PathBuf,
+    /// Daemon process id.
+    pub pid: u32,
+    /// The daemon's start time, in Unix seconds, so the newest can be chosen.
+    pub started: i64,
 }
 
 impl InstanceInfo {
-	/// Serialize as `key=value` lines.
-	#[must_use]
-	pub fn to_file_contents(&self) -> String {
-		format!(
-			"version={INFO_VERSION}\n\
+    /// Serialize as `key=value` lines.
+    #[must_use]
+    pub fn to_file_contents(&self) -> String {
+        format!(
+            "version={INFO_VERSION}\n\
 			 wayland_display={}\n\
 			 socket={}\n\
 			 pid={}\n\
 			 started={}\n",
-			self.wayland_display,
-			self.socket.display(),
-			self.pid,
-			self.started,
-		)
-	}
+            self.wayland_display,
+            self.socket.display(),
+            self.pid,
+            self.started,
+        )
+    }
 
-	/// Parse the `key=value` format.
-	///
-	/// Returns `None` for anything unparseable or from a future version: a client
-	/// skips a file it does not understand rather than failing the whole lookup.
-	#[must_use]
-	pub fn parse(contents: &str) -> Option<Self> {
-		let mut version = None;
-		let mut wayland_display = None;
-		let mut socket = None;
-		let mut pid = None;
-		let mut started = None;
+    /// Parse the `key=value` format.
+    ///
+    /// Returns `None` for anything unparseable or from a future version: a client
+    /// skips a file it does not understand rather than failing the whole lookup.
+    #[must_use]
+    pub fn parse(contents: &str) -> Option<Self> {
+        let mut version = None;
+        let mut wayland_display = None;
+        let mut socket = None;
+        let mut pid = None;
+        let mut started = None;
 
-		for line in contents.lines() {
-			let line = line.trim();
-			if line.is_empty() || line.starts_with('#') {
-				continue;
-			}
-			let (key, value) = line.split_once('=')?;
-			match key.trim() {
-				"version" => version = value.trim().parse::<u32>().ok(),
-				"wayland_display" => wayland_display = Some(value.trim().to_owned()),
-				"socket" => socket = Some(PathBuf::from(value.trim())),
-				"pid" => pid = value.trim().parse::<u32>().ok(),
-				"started" => started = value.trim().parse::<i64>().ok(),
-				// Unknown keys are ignored so a newer daemon can add fields.
-				_ => {}
-			}
-		}
+        for line in contents.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let (key, value) = line.split_once('=')?;
+            match key.trim() {
+                "version" => version = value.trim().parse::<u32>().ok(),
+                "wayland_display" => wayland_display = Some(value.trim().to_owned()),
+                "socket" => socket = Some(PathBuf::from(value.trim())),
+                "pid" => pid = value.trim().parse::<u32>().ok(),
+                "started" => started = value.trim().parse::<i64>().ok(),
+                // Unknown keys are ignored so a newer daemon can add fields.
+                _ => {}
+            }
+        }
 
-		if version? != INFO_VERSION {
-			return None;
-		}
-		Some(Self {
-			wayland_display: wayland_display?,
-			socket: socket?,
-			pid: pid?,
-			started: started?,
-		})
-	}
+        if version? != INFO_VERSION {
+            return None;
+        }
+        Some(Self {
+            wayland_display: wayland_display?,
+            socket: socket?,
+            pid: pid?,
+            started: started?,
+        })
+    }
 }
 
 /// Normalise a `WAYLAND_DISPLAY` value to a bare socket name.
@@ -102,147 +102,147 @@ impl InstanceInfo {
 /// (`/run/user/1000/wayland-1`); both must map to the same identity.
 #[must_use]
 pub fn normalise_display(value: &str) -> String {
-	Path::new(value).file_name().map_or_else(
-		|| value.to_owned(),
-		|name| name.to_string_lossy().into_owned(),
-	)
+    Path::new(value).file_name().map_or_else(
+        || value.to_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    )
 }
 
 /// Paths belonging to one instance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstancePaths {
-	/// The listening socket.
-	pub socket: PathBuf,
-	/// The metadata file.
-	pub info: PathBuf,
+    /// The listening socket.
+    pub socket: PathBuf,
+    /// The metadata file.
+    pub info: PathBuf,
 }
 
 impl InstancePaths {
-	/// The paths of the instance with this pid.
-	#[must_use]
-	pub fn for_pid(dir: &Path, pid: u32) -> Self {
-		Self {
-			socket: dir.join(format!("{pid}.sock")),
-			info: dir.join(format!("{pid}.info")),
-		}
-	}
+    /// The paths of the instance with this pid.
+    #[must_use]
+    pub fn for_pid(dir: &Path, pid: u32) -> Self {
+        Self {
+            socket: dir.join(format!("{pid}.sock")),
+            info: dir.join(format!("{pid}.info")),
+        }
+    }
 
-	/// Write the metadata file atomically.
-	///
-	/// Written to a temporary name and renamed, so a client never observes a
-	/// half-written file.
-	pub fn write_info(&self, info: &InstanceInfo) -> std::io::Result<()> {
-		if let Some(parent) = self.info.parent() {
-			std::fs::create_dir_all(parent)?;
-		}
-		let temporary = self.info.with_extension("info.tmp");
-		{
-			let mut file = std::fs::File::create(&temporary)?;
-			file.write_all(info.to_file_contents().as_bytes())?;
-			file.sync_all()?;
-		}
-		std::fs::rename(&temporary, &self.info)
-	}
+    /// Write the metadata file atomically.
+    ///
+    /// Written to a temporary name and renamed, so a client never observes a
+    /// half-written file.
+    pub fn write_info(&self, info: &InstanceInfo) -> std::io::Result<()> {
+        if let Some(parent) = self.info.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let temporary = self.info.with_extension("info.tmp");
+        {
+            let mut file = std::fs::File::create(&temporary)?;
+            file.write_all(info.to_file_contents().as_bytes())?;
+            file.sync_all()?;
+        }
+        std::fs::rename(&temporary, &self.info)
+    }
 
-	/// Remove both files, ignoring "already gone".
-	pub fn cleanup(&self) {
-		let _ = std::fs::remove_file(&self.info);
-		let _ = std::fs::remove_file(&self.socket);
-	}
+    /// Remove both files, ignoring "already gone".
+    pub fn cleanup(&self) {
+        let _ = std::fs::remove_file(&self.info);
+        let _ = std::fs::remove_file(&self.socket);
+    }
 }
 
 /// An instance that was found on disk.
 #[derive(Debug, Clone)]
 pub struct Discovered {
-	/// What the instance published about itself.
-	pub info: InstanceInfo,
-	/// Whether its socket accepted a connection. A stale entry is reported with
-	/// `false` rather than silently dropped, so the caller decides what to do.
-	pub alive: bool,
+    /// What the instance published about itself.
+    pub info: InstanceInfo,
+    /// Whether its socket accepted a connection. A stale entry is reported with
+    /// `false` rather than silently dropped, so the caller decides what to do.
+    pub alive: bool,
 }
 
 /// Find every instance serving `display`, newest first.
 #[must_use]
 pub fn discover(dir: &Path, display: &str) -> Vec<Discovered> {
-	let wanted = normalise_display(display);
-	let mut found = Vec::new();
+    let wanted = normalise_display(display);
+    let mut found = Vec::new();
 
-	let Ok(entries) = std::fs::read_dir(dir) else {
-		return found;
-	};
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return found;
+    };
 
-	for entry in entries.flatten() {
-		let path = entry.path();
-		if path.extension().is_none_or(|extension| extension != "info") {
-			continue;
-		}
-		let Ok(contents) = std::fs::read_to_string(&path) else {
-			continue;
-		};
-		let Some(info) = InstanceInfo::parse(&contents) else {
-			continue;
-		};
-		if info.wayland_display != wanted {
-			continue;
-		}
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|extension| extension != "info") {
+            continue;
+        }
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Some(info) = InstanceInfo::parse(&contents) else {
+            continue;
+        };
+        if info.wayland_display != wanted {
+            continue;
+        }
 
-		// A socket that refuses a connection belongs to a daemon that is gone;
-		// its files are leftovers to be cleaned up.
-		let alive = std::os::unix::net::UnixStream::connect(&info.socket).is_ok();
-		found.push(Discovered { info, alive });
-	}
+        // A socket that refuses a connection belongs to a daemon that is gone;
+        // its files are leftovers to be cleaned up.
+        let alive = std::os::unix::net::UnixStream::connect(&info.socket).is_ok();
+        found.push(Discovered { info, alive });
+    }
 
-	// Newest first, so a client picking one of several instances gets the daemon
-	// that started last.
-	found.sort_by_key(|entry| std::cmp::Reverse(entry.info.started));
-	found
+    // Newest first, so a client picking one of several instances gets the daemon
+    // that started last.
+    found.sort_by_key(|entry| std::cmp::Reverse(entry.info.started));
+    found
 }
 
 /// The `WAYLAND_DISPLAY` of the current session, or a clear error.
 pub fn current_display() -> Result<String, std::env::VarError> {
-	std::env::var("WAYLAND_DISPLAY")
+    std::env::var("WAYLAND_DISPLAY")
 }
 
 #[cfg(test)]
 mod tests {
-	use super::*;
+    use super::*;
 
-	#[test]
-	fn info_round_trips() {
-		let info = InstanceInfo {
-			wayland_display: String::from("wayland-1"),
-			socket: PathBuf::from("/run/user/1000/niri-tracker/42.sock"),
-			pid: 42,
-			started: 1_700_000_000,
-		};
-		let parsed = InstanceInfo::parse(&info.to_file_contents()).expect("parses");
-		assert_eq!(parsed, info);
-	}
+    #[test]
+    fn info_round_trips() {
+        let info = InstanceInfo {
+            wayland_display: String::from("wayland-1"),
+            socket: PathBuf::from("/run/user/1000/niri-tracker/42.sock"),
+            pid: 42,
+            started: 1_700_000_000,
+        };
+        let parsed = InstanceInfo::parse(&info.to_file_contents()).expect("parses");
+        assert_eq!(parsed, info);
+    }
 
-	#[test]
-	fn a_future_version_is_skipped() {
-		let text = "version=99\nwayland_display=wayland-1\nsocket=/tmp/x\npid=1\nstarted=0\n";
-		assert_eq!(InstanceInfo::parse(text), None);
-	}
+    #[test]
+    fn a_future_version_is_skipped() {
+        let text = "version=99\nwayland_display=wayland-1\nsocket=/tmp/x\npid=1\nstarted=0\n";
+        assert_eq!(InstanceInfo::parse(text), None);
+    }
 
-	#[test]
-	fn missing_fields_are_skipped() {
-		assert_eq!(
-			InstanceInfo::parse("version=1\nwayland_display=wayland-1\n"),
-			None
-		);
-	}
+    #[test]
+    fn missing_fields_are_skipped() {
+        assert_eq!(
+            InstanceInfo::parse("version=1\nwayland_display=wayland-1\n"),
+            None
+        );
+    }
 
-	#[test]
-	fn a_display_path_normalises_to_its_basename() {
-		assert_eq!(normalise_display("wayland-1"), "wayland-1");
-		assert_eq!(normalise_display("/run/user/1000/wayland-1"), "wayland-1");
-	}
+    #[test]
+    fn a_display_path_normalises_to_its_basename() {
+        assert_eq!(normalise_display("wayland-1"), "wayland-1");
+        assert_eq!(normalise_display("/run/user/1000/wayland-1"), "wayland-1");
+    }
 
-	#[test]
-	fn paths_are_named_after_the_pid() {
-		let paths = InstancePaths::for_pid(Path::new("/run"), 7);
-		assert_eq!(paths.socket, PathBuf::from("/run/7.sock"));
-		assert_eq!(paths.info, PathBuf::from("/run/7.info"));
-	}
+    #[test]
+    fn paths_are_named_after_the_pid() {
+        let paths = InstancePaths::for_pid(Path::new("/run"), 7);
+        assert_eq!(paths.socket, PathBuf::from("/run/7.sock"));
+        assert_eq!(paths.info, PathBuf::from("/run/7.info"));
+    }
 }

@@ -11,18 +11,18 @@ use std::path::PathBuf;
 /// `NIRI_TRACKER_CONFIG_DIR` overrides it.
 #[must_use]
 pub fn config_dir() -> PathBuf {
-	resolve_dir(
-		std::env::var_os("NIRI_TRACKER_CONFIG_DIR"),
-		std::env::var_os("XDG_CONFIG_HOME"),
-		std::env::var_os("HOME"),
-		".config",
-	)
+    resolve_dir(
+        std::env::var_os("NIRI_TRACKER_CONFIG_DIR"),
+        std::env::var_os("XDG_CONFIG_HOME"),
+        std::env::var_os("HOME"),
+        ".config",
+    )
 }
 
 /// The main configuration file.
 #[must_use]
 pub fn config_file() -> PathBuf {
-	config_dir().join("config.toml")
+    config_dir().join("config.toml")
 }
 
 /// The data directory holding the database.
@@ -30,18 +30,18 @@ pub fn config_file() -> PathBuf {
 /// `NIRI_TRACKER_DATA_DIR` overrides it.
 #[must_use]
 pub fn data_dir() -> PathBuf {
-	resolve_dir(
-		std::env::var_os("NIRI_TRACKER_DATA_DIR"),
-		std::env::var_os("XDG_DATA_HOME"),
-		std::env::var_os("HOME"),
-		".local/share",
-	)
+    resolve_dir(
+        std::env::var_os("NIRI_TRACKER_DATA_DIR"),
+        std::env::var_os("XDG_DATA_HOME"),
+        std::env::var_os("HOME"),
+        ".local/share",
+    )
 }
 
 /// The database file.
 #[must_use]
 pub fn database_file() -> PathBuf {
-	data_dir().join("track.db")
+    data_dir().join("track.db")
 }
 
 /// The directory for sockets and instance metadata.
@@ -52,13 +52,13 @@ pub fn database_file() -> PathBuf {
 /// instance's files are named after its pid.
 #[must_use]
 pub fn runtime_dir() -> PathBuf {
-	if let Some(dir) = std::env::var_os("NIRI_TRACKER_RUNTIME_DIR") {
-		return PathBuf::from(dir);
-	}
-	if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
-		return PathBuf::from(dir).join("niri-tracker");
-	}
-	PathBuf::from("/tmp/niri-tracker")
+    if let Some(dir) = std::env::var_os("NIRI_TRACKER_RUNTIME_DIR") {
+        return PathBuf::from(dir);
+    }
+    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
+        return PathBuf::from(dir).join("niri-tracker");
+    }
+    PathBuf::from("/tmp/niri-tracker")
 }
 
 /// Where a packaged installation publishes the JSON schema.
@@ -74,51 +74,51 @@ pub const SYSTEM_SCHEMA: &str = "/usr/share/niri-tracker/schema.json";
 /// parallel. They call this instead.
 #[must_use]
 fn resolve_dir(
-	override_dir: Option<std::ffi::OsString>,
-	xdg_var: Option<std::ffi::OsString>,
-	home: Option<std::ffi::OsString>,
-	xdg_suffix: &str,
+    override_dir: Option<std::ffi::OsString>,
+    xdg_var: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+    xdg_suffix: &str,
 ) -> PathBuf {
-	if let Some(dir) = override_dir {
-		return PathBuf::from(dir);
-	}
-	let base = xdg_var.map_or_else(
-		|| PathBuf::from(home.unwrap_or_default()).join(xdg_suffix),
-		PathBuf::from,
-	);
-	base.join("niri-tracker")
+    if let Some(dir) = override_dir {
+        return PathBuf::from(dir);
+    }
+    let base = xdg_var.map_or_else(
+        || PathBuf::from(home.unwrap_or_default()).join(xdg_suffix),
+        PathBuf::from,
+    );
+    base.join("niri-tracker")
 }
 
 #[cfg(test)]
 mod tests {
-	use super::*;
-	use std::ffi::OsString;
+    use super::*;
+    use std::ffi::OsString;
 
-	#[test]
-	fn the_override_wins() {
-		let dir = resolve_dir(
-			Some(OsString::from("/tmp/nt-cfg")),
-			Some(OsString::from("/xdg")),
-			Some(OsString::from("/home/user")),
-			".config",
-		);
-		assert_eq!(dir, PathBuf::from("/tmp/nt-cfg"));
-	}
+    #[test]
+    fn the_override_wins() {
+        let dir = resolve_dir(
+            Some(OsString::from("/tmp/nt-cfg")),
+            Some(OsString::from("/xdg")),
+            Some(OsString::from("/home/user")),
+            ".config",
+        );
+        assert_eq!(dir, PathBuf::from("/tmp/nt-cfg"));
+    }
 
-	#[test]
-	fn xdg_is_preferred_over_home() {
-		let dir = resolve_dir(
-			None,
-			Some(OsString::from("/xdg")),
-			Some(OsString::from("/home/user")),
-			".config",
-		);
-		assert_eq!(dir, PathBuf::from("/xdg/niri-tracker"));
-	}
+    #[test]
+    fn xdg_is_preferred_over_home() {
+        let dir = resolve_dir(
+            None,
+            Some(OsString::from("/xdg")),
+            Some(OsString::from("/home/user")),
+            ".config",
+        );
+        assert_eq!(dir, PathBuf::from("/xdg/niri-tracker"));
+    }
 
-	#[test]
-	fn home_is_the_fallback() {
-		let dir = resolve_dir(None, None, Some(OsString::from("/home/user")), ".config");
-		assert_eq!(dir, PathBuf::from("/home/user/.config/niri-tracker"));
-	}
+    #[test]
+    fn home_is_the_fallback() {
+        let dir = resolve_dir(None, None, Some(OsString::from("/home/user")), ".config");
+        assert_eq!(dir, PathBuf::from("/home/user/.config/niri-tracker"));
+    }
 }
