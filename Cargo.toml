@@ -1,7 +1,23 @@
 [package]
-edition = "2024"
-name    = "niri-tracker"
-version = "0.1.0"
+authors     = ["Qiumix <j487428862@gmail.com>"]
+categories  = ["command-line-utilities"]
+description = "Screen time tracking for the niri Wayland compositor"
+edition     = "2024"
+homepage    = "https://github.com/Qiumix/niri-tracker"
+keywords    = ["niri", "wayland", "screen-time", "tracker"]
+license     = "MIT"
+name        = "niri-tracker"
+readme      = "README.md"
+repository  = "https://github.com/Qiumix/niri-tracker"
+version     = "0.1.0"
+
+# Everything a `cargo install` cannot use is left out of the crate, which keeps
+# it to the code and the documents a reader of the source would want.
+exclude = [
+	".github/",
+	"packaging/",
+	"taplo.toml",
+]
 
 [dependencies]
 calloop                = "0.14"
