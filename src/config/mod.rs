@@ -20,6 +20,7 @@ pub use model::{
     AliasConfig, Config, Fallback, IdleConfig, ReportConfig, ResolveError, Resolved, StorageConfig,
     TerminalConfig, Unmatched,
 };
+pub use paths::Error as PathsError;
 pub use paths::{SYSTEM_SCHEMA, config_dir, config_file, data_dir, database_file, runtime_dir};
 
 /// The compiled-in defaults, as a complete TOML document.
@@ -51,11 +52,15 @@ pub enum Error {
     /// The merged configuration did not resolve.
     #[error("the configuration is invalid: {0}")]
     Resolve(#[from] ResolveError),
+
+    /// The configuration directory itself is unknown.
+    #[error(transparent)]
+    Paths(#[from] self::paths::Error),
 }
 
 /// Load the configuration from the standard location.
 pub fn load() -> Result<Resolved, Error> {
-    load_from(&config_file())
+    load_from(&config_file()?)
 }
 
 /// Load from an explicit path, merging over the compiled-in preset.

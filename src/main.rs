@@ -37,7 +37,10 @@ fn main() -> ExitCode {
 type BoxError = Box<dyn std::error::Error>;
 
 fn run(cli: Cli) -> Result<ExitCode, BoxError> {
-    let config_path = cli.config.clone().unwrap_or_else(config::config_file);
+    let config_path = match cli.config.clone() {
+        Some(path) => path,
+        None => config::config_file()?,
+    };
 
     match cli.command {
         Command::Daemon => {

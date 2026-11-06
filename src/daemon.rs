@@ -67,6 +67,10 @@ pub enum Error {
         pid: Option<u32>,
     },
 
+    /// The data directory itself is unknown.
+    #[error(transparent)]
+    Paths(#[from] crate::config::PathsError),
+
     /// The session lock could not be opened.
     #[error("cannot take the session lock in {path}: {source}", path = .path.display())]
     Lock {
@@ -117,7 +121,8 @@ pub fn run(config: &Resolved, config_path: &Path) -> Result<(), Error> {
         }
     };
 
-    let store = Store::open(&crate::config::database_file())?;
+    let database = crate::config::database_file().map_err(Error::Paths)?;
+    let store = Store::open(&database)?;
     // Rows left open belong to a process that is gone. Their end is the last
     // checkpoint, so finishing them is all that is needed.
     let dangling = store.close_dangling()?;
@@ -166,7 +171,7 @@ pub fn run(config: &Resolved, config_path: &Path) -> Result<(), Error> {
 
     log_info(&format!(
         "recording to {} (closed {dangling} dangling interval(s))",
-        crate::config::database_file().display()
+        database.display()
     ));
 
     let mut daemon = Daemon::new(store, server, config, config_path.to_owned());
