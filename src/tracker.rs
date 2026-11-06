@@ -399,14 +399,25 @@ impl Tracker {
                 // sleep would add hours of "screen time" to the day.
                 let cut = previous_wall + chrono::Duration::from_std(awake).unwrap_or_default();
                 let mut effects = self.close_at(cut);
+
+                // A focus loss that happened before the sleep is settled by this
+                // tick, not left for the next one: otherwise the next tick would
+                // close the interval reopened below at an instant that predates it.
+                self.unfocused_since = None;
+
                 // Nothing else reopens the interval: waking produces no focus
                 // event, so without this the whole day after a suspend is lost
-                // until the user happens to switch windows.
+                // until the user happens to switch windows. A paused tracker stays
+                // closed, and an idle one reopens only when an inhibitor means
+                // something is still being watched — a video survives a suspend,
+                // an empty room does not.
                 if !self.paused
-                    && !self.idle
+                    && (!self.idle || self.inhibited)
                     && let Some(focus) = self.focused.clone()
                 {
-                    effects.extend(self.open(self.make_live(&focus, wall)));
+                    let mut live = self.make_live(&focus, wall);
+                    live.passive = self.idle;
+                    effects.extend(self.open(live));
                 }
                 return effects;
             }
@@ -814,6 +825,60 @@ mod tests {
             end < before_sleep + chrono::Duration::seconds(120),
             "the sleep must not be counted: ended {end}, woke at {}",
             clock.wall()
+        );
+    }
+
+    #[test]
+    fn a_suspend_while_watching_a_video_keeps_counting() {
+        let clock = clock();
+        let mut tracker = idle_tracker();
+        tracker.on_focus(focus("mpv", "video"), &clock);
+        tracker.adopt(1);
+        tracker.on_inhibitor(true, &clock);
+        tracker.on_input_idle(clock.wall(), &clock);
+        assert_eq!(tracker.live().map(|live| live.passive), Some(true));
+
+        // The machine sleeps while the video plays: the video is still there after
+        // the wake-up, and the user is still not touching anything.
+        tracker.on_tick(&clock);
+        clock.advance_wall_only(Duration::from_secs(8 * 3600));
+        let effects = tracker.on_tick(&clock);
+
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Open(_))),
+            "the passive interval must reopen after the sleep: {effects:?}"
+        );
+        assert_eq!(
+            tracker.live().map(|live| live.passive),
+            Some(true),
+            "and it is still passive"
+        );
+    }
+
+    #[test]
+    fn a_suspend_settles_a_pending_focus_loss() {
+        let clock = clock();
+        let mut tracker = idle_tracker();
+        tracker.on_focus(focus("kitty", "shell"), &clock);
+        tracker.adopt(1);
+        tracker.on_tick(&clock);
+
+        // Focus is lost, then the machine sleeps before any tick settles the gap.
+        tracker.on_focus(None, &clock);
+        clock.advance_wall_only(Duration::from_secs(8 * 3600));
+        tracker.on_tick(&clock);
+
+        // The next tick must not close the interval that was reopened on waking at
+        // an instant from before the sleep.
+        clock.advance(Duration::from_secs(60));
+        let effects = tracker.on_tick(&clock);
+        assert!(
+            effects
+                .iter()
+                .all(|effect| !matches!(effect, Effect::Close { .. })),
+            "the reopened interval must survive the next tick: {effects:?}"
         );
     }
 
