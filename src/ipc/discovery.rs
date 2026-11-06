@@ -240,6 +240,33 @@ mod tests {
     }
 
     #[test]
+    fn cleanup_removes_only_its_own_files() {
+        // The runtime directory is shared by every session on the machine, so one
+        // instance going away must not take another instance's files with it.
+        let dir = std::env::temp_dir().join(format!("nt-discovery-{}", std::process::id()));
+        let ours = InstancePaths::for_pid(&dir, 1);
+        let theirs = InstancePaths::for_pid(&dir, 2);
+
+        for paths in [&ours, &theirs] {
+            std::fs::create_dir_all(&dir).expect("creates the directory");
+            std::fs::write(&paths.socket, b"").expect("writes a socket file");
+            std::fs::write(&paths.info, b"").expect("writes an info file");
+        }
+
+        ours.cleanup();
+
+        assert!(!ours.socket.exists(), "our socket goes");
+        assert!(!ours.info.exists(), "our info goes");
+        assert!(
+            theirs.socket.exists(),
+            "the other instance keeps its socket"
+        );
+        assert!(theirs.info.exists(), "the other instance keeps its info");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn paths_are_named_after_the_pid() {
         let paths = InstancePaths::for_pid(Path::new("/run"), 7);
         assert_eq!(paths.socket, PathBuf::from("/run/7.sock"));
