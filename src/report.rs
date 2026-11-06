@@ -17,6 +17,12 @@ pub struct Attributed {
     /// The name the time is credited to when grouping by application: the
     /// app_id, or the alias that claimed it.
     pub name: String,
+    /// The app_id the compositor reported, before any alias claimed it.
+    ///
+    /// Kept because `--app` names an application, not a row: filtering on the
+    /// credited name would make a configured alias hide the application it
+    /// renames.
+    pub app_id: String,
     /// The window title, kept separate because grouping by title needs it and
     /// the two must not be confused.
     pub title: String,
@@ -205,6 +211,7 @@ fn attribute(
         if alias.titles.is_empty() {
             return Attributed {
                 name: alias.name.clone(),
+                app_id: app_id.to_owned(),
                 title: report_title,
                 start,
                 seconds,
@@ -219,6 +226,7 @@ fn attribute(
         {
             return Attributed {
                 name: alias.name.clone(),
+                app_id: app_id.to_owned(),
                 title: alias.name.clone(),
                 start,
                 seconds,
@@ -233,6 +241,7 @@ fn attribute(
         };
         return Attributed {
             name,
+            app_id: app_id.to_owned(),
             title: report_title,
             start,
             seconds,
@@ -241,6 +250,7 @@ fn attribute(
 
     Attributed {
         name: app_id.to_owned(),
+        app_id: app_id.to_owned(),
         title: report_title,
         start,
         seconds,
@@ -250,7 +260,7 @@ fn attribute(
 /// Whether a stretch passes the filters in `query`.
 fn matches_query(piece: &Attributed, query: &QueryArgs) -> bool {
     if let Some(app) = &query.app
-        && &piece.name != app
+        && &piece.app_id != app
     {
         return false;
     }
@@ -478,12 +488,40 @@ mod tests {
     }
 
     #[test]
-    fn the_app_filter_matches_the_credited_name() {
+    fn the_app_filter_matches_the_app_id() {
         let sessions = vec![session("kitty", "", 30), session("firefox", "", 60)];
         let mut args = query(GroupKey::App);
         args.app = Some(String::from("kitty"));
         let report = build(&sessions, None, &args, &config());
         assert_eq!(report.total_seconds, 30);
+    }
+
+    #[test]
+    fn the_app_filter_still_finds_an_app_that_an_alias_renamed() {
+        let mut cfg = config();
+        cfg.aliases = vec![AliasConfig {
+            name: String::from("Browser"),
+            app_ids: vec![String::from("floorp")],
+            titles: Vec::new(),
+            unmatched: Unmatched::Keep,
+        }];
+        let sessions = vec![session("floorp", "anything", 60)];
+
+        let mut by_id = query(GroupKey::App);
+        by_id.app = Some(String::from("floorp"));
+        assert_eq!(
+            build(&sessions, None, &by_id, &cfg).total_seconds,
+            60,
+            "the app is still the app, whatever a report calls it"
+        );
+
+        let mut by_alias = query(GroupKey::App);
+        by_alias.app = Some(String::from("Browser"));
+        assert_eq!(
+            build(&sessions, None, &by_alias, &cfg).total_seconds,
+            0,
+            "an alias is a display name, not an app_id"
+        );
     }
 
     #[test]
