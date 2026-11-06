@@ -36,3 +36,15 @@ wayland-protocols      = { version = "0.32", features = ["client", "staging"] }
 bin-dir = "{ name }-{ target }/{ bin }"
 pkg-fmt = "tgz"
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.gz"
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+codegen-units = 1
+lto           = true
+panic         = "abort"
+strip         = true
