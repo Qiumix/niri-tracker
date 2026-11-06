@@ -9,26 +9,7 @@ you stop touching the keyboard and mouse, it stops counting — unless something
 is holding the screen awake to play a video, in which case it keeps counting and
 marks the time as passive.
 
-```text
-$ niri-tracker report
-QQ                      37m 15s
-floorp                  20m 49s
-fish                    4m 41s
-nvim                    2m 47s
-yazi                    36s
-niri-tracker            22s
-top.imsyy.splayer_next  17s
-xargs                   9s
-cargo                   4s
-less                    4s
-glow                    3s
-fzf                     2s
-rustc                   2s
-file                    1s
-sh                      1s
-
-Total                   1h 7m 13s
-```
+<img width="1608" height="921" alt="Image" src="https://github.com/user-attachments/assets/f69166d0-4191-43f5-aeed-7b35b724b571" />
 
 ## Why not just sample the active window?
 
