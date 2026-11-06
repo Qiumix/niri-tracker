@@ -193,6 +193,26 @@ impl Tracker {
         self.close_at(clock.wall())
     }
 
+    /// Adopt new settings, keeping the state that is not configuration.
+    ///
+    /// A reload must not forget that recording was paused or that the user is away.
+    /// A fresh tracker would believe both are false and start counting time that
+    /// the caller had explicitly asked it not to, so the settings change in place
+    /// instead of the machine being replaced.
+    pub fn reconfigure(&mut self, idle_timeout: Duration, terminals: Vec<TerminalConfig>) {
+        self.idle_timeout = idle_timeout;
+        self.terminals = terminals;
+    }
+
+    /// End the open interval, leaving every other piece of state alone.
+    ///
+    /// Used when the configuration is replaced: the row must be finished with the
+    /// settings it was recorded under, but pausing to achieve that would also
+    /// change whether the tracker is paused, which is not what a reload means.
+    pub fn close_open(&mut self, clock: &dyn Clock) -> Vec<Effect> {
+        self.close_at(clock.wall())
+    }
+
     /// Resume recording.
     ///
     /// Nothing is opened here: the daemon asks the compositor for the current
@@ -824,6 +844,35 @@ mod tests {
         // A focus event while paused must not open anything.
         let effects = tracker.on_focus(focus("firefox", "mail"), &clock);
         assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn closing_the_open_interval_does_not_pause() {
+        let clock = clock();
+        let mut tracker = idle_tracker();
+        tracker.on_focus(focus("kitty", "shell"), &clock);
+        tracker.adopt(1);
+
+        let effects = tracker.close_open(&clock);
+
+        assert!(matches!(effects[0], Effect::Close { id: 1, .. }));
+        assert!(tracker.live().is_none());
+        assert!(!tracker.paused(), "closing a row is not a pause");
+    }
+
+    #[test]
+    fn reconfiguring_keeps_paused_and_idle() {
+        let clock = clock();
+        let mut tracker = idle_tracker();
+        tracker.on_focus(focus("kitty", "shell"), &clock);
+        tracker.adopt(1);
+        tracker.on_input_idle(clock.wall(), &clock);
+        tracker.pause(&clock);
+
+        tracker.reconfigure(Duration::from_secs(600), Vec::new());
+
+        assert!(tracker.paused(), "a reload must not resume by itself");
+        assert!(tracker.idle(), "a reload must not forget the user is away");
     }
 
     #[test]
