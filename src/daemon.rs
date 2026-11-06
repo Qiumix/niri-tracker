@@ -529,17 +529,19 @@ impl Daemon {
     fn reload(&mut self) -> Result<(), String> {
         match crate::config::load_from(&self.config_path) {
             Ok(resolved) => {
-                // Close whatever is open before the tracker is replaced: the new
-                // one starts with no interval, so the row would be left open and
-                // the stretch recorded since the last checkpoint would be lost.
+                // Finish the open row under the settings it was recorded with, then
+                // adopt the new ones. The tracker is reconfigured rather than
+                // rebuilt so that paused and idle survive: a fresh machine would
+                // believe recording is running and the user is present, and would
+                // start counting both.
                 let clock = SystemClock;
-                self.decision(|tracker| tracker.pause(&clock));
+                self.decision(|tracker| tracker.close_open(&clock));
 
                 self.config = resolved.clone();
-                self.tracker = Tracker::new(resolved.idle_timeout, resolved.terminals.clone());
-                // Recording resumes under the new settings; the pause above was
-                // only a way to close the interval cleanly.
-                self.decision(|tracker| tracker.resume());
+                self.tracker
+                    .reconfigure(resolved.idle_timeout, resolved.terminals.clone());
+                // Re-opens an interval unless paused, and stores the focus without
+                // one while idle, which is exactly the state to resume from.
                 self.refresh_focus();
                 // Restart idle detection so a changed timeout takes effect.
                 self.idle = None;
