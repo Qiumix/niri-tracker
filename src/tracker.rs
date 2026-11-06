@@ -233,23 +233,35 @@ impl Tracker {
             return Vec::new();
         }
 
-        // Focus came back quickly to the window that already had it: the gap was
-        // an artefact, and the interval was never really interrupted.
-        if let Some(since) = returning {
-            let grace = chrono::Duration::from_std(FOCUS_GAP_GRACE).unwrap_or_default();
-            let quickly = now - since < grace;
-            if quickly
-                && let Some(current) = &self.current
-                && current.live.app_id == focus.app_id
-                && current.live.title == focus.title
-            {
-                self.focused = Some(focus);
-                return Vec::new();
-            }
+        // The name the interval holds, which for a split terminal is the program
+        // running inside it rather than the terminal's own app_id. Comparing the
+        // raw app_id here would never match, so every window-list event would end
+        // the interval and start another one for the same window.
+        let resolved = self.resolve_app_id(&focus);
+        let grace = chrono::Duration::from_std(FOCUS_GAP_GRACE).unwrap_or_default();
+        let uninterrupted = returning.is_none_or(|since| now - since < grace);
+
+        // The same window is still the one being timed, and nothing interrupted it:
+        // there is nothing to record, only a focus to remember.
+        if uninterrupted
+            && let Some(current) = &self.current
+            && current.live.app_id == resolved
+            && current.live.title == focus.title
+            && !current.live.passive
+        {
+            self.focused = Some(focus);
+            return Vec::new();
         }
 
-        let mut effects = self.close_at(now);
-        let live = self.make_live(&focus, now);
+        // A window that came back after the grace has passed ended the interval when
+        // it lost focus, not now: the time in between was not spent on it.
+        let mut effects = self.close_at(returning.unwrap_or(now));
+        let live = Live {
+            app_id: resolved,
+            title: focus.title.clone(),
+            passive: false,
+            start: now,
+        };
         effects.extend(self.open(live));
         self.focused = Some(focus);
         effects
@@ -535,6 +547,58 @@ mod tests {
         assert_eq!(
             tracker.live().map(|live| live.app_id.as_str()),
             Some("kitty")
+        );
+    }
+
+    #[test]
+    fn focusing_the_same_window_again_changes_nothing() {
+        let clock = clock();
+        let mut tracker = idle_tracker();
+        tracker.on_focus(focus("kitty", "shell"), &clock);
+        tracker.adopt(1);
+        clock.advance(Duration::from_secs(5));
+
+        // The window list changed and the daemon re-queried the same window, as it
+        // does on every window open or close anywhere on the session.
+        let effects = tracker.on_focus(focus("kitty", "shell"), &clock);
+
+        assert!(
+            effects.is_empty(),
+            "the same window must not split the interval: {effects:?}"
+        );
+        assert_eq!(
+            tracker.live().map(|live| live.app_id.as_str()),
+            Some("kitty")
+        );
+    }
+
+    #[test]
+    fn returning_to_the_same_window_after_the_grace_starts_a_new_interval() {
+        let clock = clock();
+        let mut tracker = idle_tracker();
+        tracker.on_focus(focus("kitty", "shell"), &clock);
+        tracker.adopt(1);
+        clock.advance(Duration::from_secs(30));
+
+        tracker.on_focus(None, &clock);
+        let lost_at = clock.wall();
+        clock.advance(Duration::from_secs(10));
+
+        let effects = tracker.on_focus(focus("kitty", "shell"), &clock);
+
+        // The old interval ends where focus was lost, so the time in between is not
+        // counted against it, and the new one starts now.
+        assert!(
+            effects.contains(&Effect::Close {
+                id: 1,
+                end: lost_at
+            }),
+            "closed where focus was lost: {effects:?}"
+        );
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Open(_)))
         );
     }
 
