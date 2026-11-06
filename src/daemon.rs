@@ -29,7 +29,7 @@ use chrono::Utc;
 use crate::compositor::idle::{Idle, IdleEvent};
 use crate::compositor::niri::{self, Watch};
 use crate::config::Resolved;
-use crate::db::{Live, Store};
+use crate::db::Store;
 use crate::ipc::{
     Empty, ErrorKind, GroupKey, LiveStatus, Payload, QueryArgs, Report, Request, Response, Server,
     Status, Verb, WireError,
@@ -473,16 +473,11 @@ impl Daemon {
                 return;
             };
 
-            let response = self.answer(&request);
+            let response = self.handle(&request);
             if let Err(err) = crate::ipc::server::reply(&mut stream, &response) {
                 log_warn(&format!("cannot reply to a client: {err}"));
             }
         }
-    }
-
-    /// Decide what a request means.
-    fn answer(&mut self, request: &Request) -> Response {
-        self.handle(request)
     }
 
     /// Apply the changes a tracker decision asks for.
@@ -629,17 +624,6 @@ impl Daemon {
                 }
             }
         }
-    }
-}
-
-/// A stretch being recorded, for callers that need one without a store.
-#[must_use]
-pub fn empty_live() -> Live {
-    Live {
-        app_id: String::new(),
-        title: String::new(),
-        passive: false,
-        start: Utc::now(),
     }
 }
 

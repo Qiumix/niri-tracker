@@ -265,14 +265,14 @@ fn bind_notifier(
     handle: &QueueHandle<IdleState>,
 ) -> Result<ExtIdleNotifierV1, Error> {
     let mut found = None;
-    let mut too_old = false;
 
     for global in globals.contents().clone_list() {
         if global.interface != NOTIFIER_INTERFACE {
             continue;
         }
+        // Too old is the same answer as absent: either way this module cannot work,
+        // and `Error::Unsupported` already names the version it needs.
         if global.version < REQUIRED_VERSION {
-            too_old = true;
             continue;
         }
         // The second argument is a *version* range, not the global's name:
@@ -288,11 +288,7 @@ fn bind_notifier(
         found = Some(bound);
     }
 
-    match (found, too_old) {
-        (Some(notifier), _) => Ok(notifier),
-        (None, true) => Err(Error::Unsupported),
-        (None, false) => Err(Error::Unsupported),
-    }
+    found.ok_or(Error::Unsupported)
 }
 
 /// Bind the first seat.

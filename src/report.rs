@@ -417,7 +417,6 @@ mod tests {
             app_id: app_id.to_owned(),
             title: title.to_owned(),
             passive: false,
-            closed: true,
         }
     }
 
@@ -593,7 +592,6 @@ mod tests {
             app_id: String::from("kitty"),
             title: String::new(),
             passive: false,
-            closed: true,
         };
 
         let mut args = query(GroupKey::Day);
@@ -629,7 +627,6 @@ mod tests {
             app_id: String::from("kitty"),
             title: String::new(),
             passive: false,
-            closed: true,
         };
 
         let report = build(&[session], None, &query(GroupKey::Hour), &config());
@@ -650,7 +647,6 @@ mod tests {
             app_id: String::from("kitty"),
             title: String::new(),
             passive: false,
-            closed: true,
         };
 
         let mut args = query(GroupKey::App);
