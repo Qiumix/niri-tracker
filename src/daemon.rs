@@ -1,10 +1,18 @@
 //! The daemon: one loop that watches the compositor, records intervals, and
 //! answers clients.
 //!
-//! Everything runs on one thread. The event sources are all file descriptors
-//! (niri's socket, the Wayland connection, the IPC listener) plus a one-minute
-//! timer, so a single `poll` over them is enough; spreading the work over threads
-//! would add synchronisation to a program that handles a few events a minute.
+//! Everything runs on one thread. The only source that blocks is niri's event
+//! stream, which gets a thread of its own and forwards what it reads through a
+//! channel; the rest — the Wayland connection and the control socket — are polled
+//! without blocking, and the main loop wakes every 50 ms to look.
+//!
+//! That is twenty wake-ups a second, which sounds worse than it is: each one is a
+//! non-blocking read and a non-blocking `accept`, and the interval is far longer
+//! than the time the processor spends idle, so it is not what keeps a laptop out
+//! of its deep states. Waiting on the descriptors with `poll` instead would remove
+//! the wake-ups, and would also mean a file descriptor, a self-pipe for the reader
+//! thread and a timer to coordinate. The events here arrive a few times a minute,
+//! so the trade has not been worth making.
 //!
 //! The loop owns three things and nothing else does:
 //!

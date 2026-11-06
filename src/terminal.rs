@@ -283,28 +283,34 @@ mod tests {
     }
 
     #[test]
-    fn the_children_walk_finds_a_real_child() {
-        // Runs the same path the daemon uses. On a kernel without
-        // CONFIG_PROC_CHILDREN this exercises the fallback instead, and must still
-        // find the child.
+    fn both_paths_find_a_real_child() {
+        // Runs the same two paths the daemon chooses between. Every distribution
+        // kernel publishes the `children` files, but the code treats them as
+        // optional, so the walk's assertion is skipped where they are missing and
+        // the scan is checked in either case.
         let mut child = std::process::Command::new("sleep")
             .arg("30")
             .spawn()
             .expect("spawn a child to look for");
         std::thread::sleep(std::time::Duration::from_millis(100));
 
-        let walked = walk_children(std::process::id()).expect("this kernel publishes children");
-        let found = walked.iter().any(|entry| entry.pid == child.id());
-
-        let table = read_table();
-        let scanned = table
-            .get(&child.id())
-            .is_some_and(|entry| is_descendant(&table, entry.pid, std::process::id()));
+        let walked = walk_children(std::process::id());
+        let scanned = {
+            let table = read_table();
+            table
+                .get(&child.id())
+                .is_some_and(|entry| is_descendant(&table, entry.pid, std::process::id()))
+        };
 
         let _ = child.kill();
         let _ = child.wait();
 
-        assert!(found, "the children walk must see the child it was given");
+        if let Some(entries) = walked {
+            assert!(
+                entries.iter().any(|entry| entry.pid == child.id()),
+                "the children walk must see the child it was given"
+            );
+        }
         assert!(
             scanned,
             "the fallback scan must place the child under its parent"
@@ -322,11 +328,17 @@ mod tests {
     }
 
     #[test]
-    fn children_are_read_across_threads() {
-        // A process with no children still answers: the file exists and is empty.
-        // `None` would mean the kernel does not publish it at all.
-        let children = read_children(std::process::id());
-        assert!(children.is_some(), "this kernel should publish children");
+    fn missing_children_files_are_reported_as_unsupported() {
+        // The two functions have to agree on whether this kernel publishes the
+        // files at all: the walk declines only when there is nothing to read, and
+        // `read_children` answers for a single process. This holds on kernels with
+        // and without CONFIG_PROC_CHILDREN.
+        let per_process = read_children(std::process::id()).is_some();
+        let walk = walk_children(std::process::id()).is_some();
+        assert_eq!(
+            per_process, walk,
+            "the walk and the single-process read must agree on whether children exist"
+        );
     }
 
     #[test]
