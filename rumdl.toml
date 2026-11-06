@@ -16,6 +16,7 @@ headings    = false
 tables      = false
 
 [MD033]
-# A little inline HTML is worth it for <kbd> and for a table cell that needs a
-# line break.
-allowed-elements = ["kbd", "br"]
+# A little inline HTML is worth it for <kbd>, for a table cell that needs a line
+# break, and for a screenshot: Markdown's own image syntax cannot set a size, so a
+# full-width capture has to be <img width=...> or it swamps the page.
+allowed-elements = ["kbd", "br", "img"]
