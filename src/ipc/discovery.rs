@@ -198,6 +198,83 @@ pub fn discover(dir: &Path, display: &str) -> Vec<Discovered> {
     found
 }
 
+/// An exclusive claim on one Wayland session's daemon slot.
+///
+/// The pid-named files describe instances but cannot decide between two that
+/// start at the same moment: both would find no live instance and both would
+/// publish their own socket. A lock does decide, and the kernel releases it when
+/// the process dies, including on a panic, which the files cannot promise.
+///
+/// The lock file is never removed. Unlinking it would let a second process create
+/// a fresh file and lock that instead, and both would believe they hold the slot.
+pub struct Lock {
+    #[expect(
+        dead_code,
+        reason = "held for its side effect: the flock lives as long as the file is open"
+    )]
+    file: std::fs::File,
+}
+
+/// Why the slot could not be claimed.
+#[derive(Debug, thiserror::Error)]
+pub enum LockError {
+    /// Another daemon holds it.
+    #[error("already held by pid {pid:?}")]
+    Held {
+        /// The pid recorded by the holder, when it could be read.
+        pid: Option<u32>,
+    },
+
+    /// The lock file could not be opened or read.
+    #[error("could not open the lock file: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+impl Lock {
+    /// Claim the slot for `display`, or report who holds it.
+    pub fn acquire(dir: &std::path::Path, display: &str) -> Result<Self, LockError> {
+        use std::io::{Read as _, Seek as _, Write as _};
+
+        std::fs::create_dir_all(dir)?;
+        let path = dir.join(format!("{}.lock", normalise_display(display)));
+
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
+
+        // SAFETY: `flock` only reads the descriptor it is given, which is valid for
+        // as long as `file` is open, and takes no other pointers.
+        let claimed = unsafe {
+            libc::flock(
+                std::os::unix::io::AsRawFd::as_raw_fd(&file),
+                libc::LOCK_EX | libc::LOCK_NB,
+            )
+        };
+        if claimed != 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::WouldBlock {
+                let mut holder = String::new();
+                let _ = file.read_to_string(&mut holder);
+                return Err(LockError::Held {
+                    pid: holder.trim().parse().ok(),
+                });
+            }
+            return Err(LockError::Io(err));
+        }
+
+        // Recorded for the error message the next daemon prints; not authoritative,
+        // because the lock is.
+        let _ = file.set_len(0);
+        let _ = file.seek(std::io::SeekFrom::Start(0));
+        let _ = write!(file, "{}", std::process::id());
+
+        Ok(Self { file })
+    }
+}
+
 /// The `WAYLAND_DISPLAY` of the current session, or a clear error.
 pub fn current_display() -> Result<String, std::env::VarError> {
     std::env::var("WAYLAND_DISPLAY")
@@ -237,6 +314,38 @@ mod tests {
     fn a_display_path_normalises_to_its_basename() {
         assert_eq!(normalise_display("wayland-1"), "wayland-1");
         assert_eq!(normalise_display("/run/user/1000/wayland-1"), "wayland-1");
+    }
+
+    #[test]
+    fn the_lock_admits_one_holder_at_a_time() {
+        let dir = std::env::temp_dir().join(format!("nt-lock-{}", std::process::id()));
+
+        let first = Lock::acquire(&dir, "wayland-1").expect("first claim");
+        match Lock::acquire(&dir, "wayland-1") {
+            Err(LockError::Held { pid }) => {
+                assert_eq!(pid, Some(std::process::id()), "the holder records its pid")
+            }
+            Ok(_) => panic!("a second daemon must not claim the same session"),
+            Err(other) => panic!("unexpected failure: {other}"),
+        }
+
+        // Releasing is what the kernel does when the holder goes away.
+        drop(first);
+        let third = Lock::acquire(&dir, "wayland-1").expect("claim after release");
+        drop(third);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_lock_is_per_session() {
+        let dir = std::env::temp_dir().join(format!("nt-lock-two-{}", std::process::id()));
+
+        let one = Lock::acquire(&dir, "wayland-1").expect("first session");
+        let other = Lock::acquire(&dir, "wayland-2").expect("a different session is separate");
+
+        drop((one, other));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

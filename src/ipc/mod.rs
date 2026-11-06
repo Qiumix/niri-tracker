@@ -16,7 +16,9 @@ pub mod protocol;
 pub mod server;
 
 pub use client::Client;
-pub use discovery::{Discovered, InstanceInfo, InstancePaths, discover, normalise_display};
+pub use discovery::{
+    Discovered, InstanceInfo, InstancePaths, Lock, LockError, discover, normalise_display,
+};
 pub use protocol::{
     Args, Empty, ErrorKind, GroupKey, LiveStatus, Payload, QueryArgs, Report, Request, Response,
     Row, Status, Verb, WireError, encode_line,

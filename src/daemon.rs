@@ -61,10 +61,20 @@ pub enum Error {
     },
 
     /// Another daemon already owns this Wayland session.
-    #[error("a daemon is already running for this session (pid {pid})")]
+    #[error("{}", describe_holder(*pid))]
     AlreadyRunning {
-        /// The pid of the instance that owns the session.
-        pid: u32,
+        /// The pid the holder recorded, when it could be read.
+        pid: Option<u32>,
+    },
+
+    /// The session lock could not be opened.
+    #[error("cannot take the session lock in {path}: {source}", path = .path.display())]
+    Lock {
+        /// The runtime directory holding the lock file.
+        path: PathBuf,
+        /// Why it failed.
+        #[source]
+        source: std::io::Error,
     },
 
     /// Publishing the instance metadata failed.
@@ -87,18 +97,29 @@ pub fn run(config: &Resolved, config_path: &Path) -> Result<(), Error> {
     let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| String::from("wayland-0"));
     let runtime_dir = crate::config::runtime_dir();
 
-    // Refuse to be the second daemon for one session: two of them would record
-    // every second twice, and nothing about the resulting report would look wrong.
+    // Leftovers from daemons that are gone are safe to remove now that they are
+    // known not to be listening. A live one is left alone: its files are about to
+    // make the lock below fail, and deleting them would break its clients.
     for found in crate::ipc::discover(&runtime_dir, &display) {
-        if found.alive {
-            return Err(Error::AlreadyRunning {
-                pid: found.info.pid,
+        if !found.alive {
+            crate::ipc::InstancePaths::for_pid(&runtime_dir, found.info.pid).cleanup();
+        }
+    }
+
+    // One daemon per session, decided atomically. Two of them would record every
+    // second twice, and nothing about the resulting report would look wrong.
+    // Looking for a live instance first would let two daemons that start at the
+    // same moment both find none.
+    let _lock = match crate::ipc::Lock::acquire(&runtime_dir, &display) {
+        Ok(lock) => lock,
+        Err(crate::ipc::LockError::Held { pid }) => return Err(Error::AlreadyRunning { pid }),
+        Err(crate::ipc::LockError::Io(source)) => {
+            return Err(Error::Lock {
+                path: runtime_dir.clone(),
+                source,
             });
         }
-        // A leftover from a daemon that died; safe to remove now that it is known
-        // not to be listening.
-        crate::ipc::InstancePaths::for_pid(&runtime_dir, found.info.pid).cleanup();
-    }
+    };
 
     let store = Store::open(&crate::config::database_file())?;
     // Rows left open belong to a process that is gone. Their end is the last
@@ -196,6 +217,14 @@ impl tracing_subscriber::fmt::time::FormatTime for LocalTime {
         writer: &mut tracing_subscriber::fmt::format::Writer<'_>,
     ) -> std::fmt::Result {
         write!(writer, "{}", chrono::Local::now().format("%H:%M:%S%.3f"))
+    }
+}
+
+/// How to describe the daemon that already owns the session.
+fn describe_holder(pid: Option<u32>) -> String {
+    match pid {
+        Some(pid) => format!("a daemon is already running for this session (pid {pid})"),
+        None => String::from("a daemon is already running for this session"),
     }
 }
 

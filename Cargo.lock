@@ -432,6 +432,7 @@ dependencies = [
  "chrono",
  "clap",
  "clap_complete",
+ "libc",
  "niri-ipc",
  "rusqlite",
  "schemars",
