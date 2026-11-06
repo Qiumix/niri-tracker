@@ -229,6 +229,22 @@ fn render(response: niri_tracker::ipc::Response, json: bool) -> Result<ExitCode,
 /// two cells per character, so counting characters would print a column that looks
 /// ragged to anyone reading it.
 fn print_report(report: &Report) {
+    if report.rows.is_empty() {
+        // Nothing to list, but the period may still have time in it: `--limit 0`
+        // hides every row without hiding the total.
+        if report.total_seconds > 0 {
+            println!(
+                "{}",
+                config::format_duration(std::time::Duration::from_secs(
+                    report.total_seconds.unsigned_abs()
+                )),
+            );
+        } else {
+            println!("(nothing recorded for this period)");
+        }
+        return;
+    }
+
     let width = report
         .rows
         .iter()
@@ -243,11 +259,6 @@ fn print_report(report: &Report) {
             pad(&truncate(&row.name, width), width),
             config::format_duration(std::time::Duration::from_secs(row.seconds.unsigned_abs())),
         );
-    }
-
-    if report.rows.is_empty() {
-        println!("(nothing recorded for this period)");
-        return;
     }
 
     println!();
