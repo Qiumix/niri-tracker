@@ -2,8 +2,12 @@
 //!
 //! Time is recorded as intervals rather than samples: one row covers a stretch
 //! of time that was spent on one window, which is what a report wants and what
-//! keeps the file small. Every row is confined to a single local day, so
-//! grouping by day needs no arithmetic over overlapping ranges.
+//! keeps the file small.
+//!
+//! A row is **not** confined to a local day. An interval ends when focus changes,
+//! so a window left focused overnight produces one row spanning two days. Reports
+//! therefore select by overlap and clip, rather than trusting a row to belong to
+//! one day; `Session::local_date` is only where a row began.
 
 use chrono::{DateTime, Local, NaiveDate, TimeZone as _, Utc};
 

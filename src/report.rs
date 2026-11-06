@@ -176,9 +176,12 @@ fn split(
 
 /// Apply the alias and normalisation rules to one stretch.
 ///
-/// Produces the credited application name and the report-ready title. An alias
-/// that matches a title replaces both: the point of such a rule is that the
-/// pieces are reported as distinct entries under the alias's name.
+/// Produces the credited application name and the report-ready title.
+///
+/// An alias that matches a title sets both to the alias's name, so every title it
+/// matches is folded into one row under that name. That is what makes the rule
+/// useful for grouping, and it is also why `details` cannot break such an app down
+/// by window title: the individual titles are gone by the time a report is built.
 fn attribute(
     app_id: &str,
     title: &str,
