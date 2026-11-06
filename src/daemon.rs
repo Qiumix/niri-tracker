@@ -384,18 +384,11 @@ impl Daemon {
     fn refresh_focus(&mut self) {
         let clock = SystemClock;
         match niri::query_focused() {
-            Ok(focus) => {
-                if self
-                    .tracker
-                    .live()
-                    .map(|live| (live.app_id.clone(), live.title.clone()))
-                    != focus
-                        .as_ref()
-                        .map(|focus| (focus.app_id.clone(), focus.title.clone()))
-                {
-                    self.decision(|tracker| tracker.on_focus(focus, &clock));
-                }
-            }
+            // Handed over unconditionally: comparing here would have to resolve a
+            // terminal to its foreground process the same way the tracker does, and
+            // getting that subtly different is how intervals get sliced. The tracker
+            // ignores a focus it is already timing.
+            Ok(focus) => self.decision(|tracker| tracker.on_focus(focus, &clock)),
             Err(err) => log_warn(&format!("cannot query the focused window: {err}")),
         }
     }
