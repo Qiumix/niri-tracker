@@ -58,22 +58,32 @@ impl Server {
 
     /// Take one waiting connection and read its request.
     ///
-    /// Returns the request together with the stream it arrived on, so the caller
+    /// Returns what was read together with the stream it arrived on, so the caller
     /// can answer after it has finished borrowing everything else. `None` means
     /// nobody is waiting.
     ///
-    /// A client that sends nonsense still gets a stream back, carrying a failure
-    /// response; only a connection that cannot be read at all is dropped.
-    pub fn accept(&self) -> Result<Option<(Request, UnixStream)>, std::io::Error> {
+    /// A line that is not a request comes back as an error rather than as no
+    /// connection at all: the client is still there, waiting for an answer, and
+    /// deserves to be told what was wrong with it. Only a connection that sends
+    /// nothing is dropped.
+    pub fn accept(&self) -> std::io::Result<Option<Incoming>> {
         match self.listener.accept() {
             Ok((stream, _address)) => match read_request(&stream) {
-                Some(request) => Ok(Some((request, stream))),
+                Some(request) => Ok(Some(Incoming { request, stream })),
                 None => Ok(None),
             },
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
             Err(err) => Err(err),
         }
     }
+}
+
+/// One connection, ready to be answered.
+pub struct Incoming {
+    /// The request, or why the line that arrived was not one.
+    pub request: Result<Request, String>,
+    /// The connection the answer goes back on.
+    pub stream: UnixStream,
 }
 
 /// Write a response to `stream` and close it.
@@ -84,15 +94,15 @@ pub fn reply(stream: &mut UnixStream, response: &Response) -> std::io::Result<()
 
 /// Read one request from a fresh connection.
 ///
-/// Returns `None` when the line is not a valid request; the caller answers that
-/// with a failure rather than the stream being dropped silently, so a confused
-/// client learns what went wrong.
-fn read_request(stream: &UnixStream) -> Option<Request> {
+/// `None` means nothing was sent, which is not worth answering. `Some(Err(..))`
+/// means a line arrived but was not a request: the client is waiting and gets an
+/// explanation.
+fn read_request(stream: &UnixStream) -> Option<Result<Request, String>> {
     read_request_within(stream, REQUEST_TIMEOUT)
 }
 
 /// The same, with the timeout given, so tests need not wait five seconds.
-fn read_request_within(stream: &UnixStream, timeout: Duration) -> Option<Request> {
+fn read_request_within(stream: &UnixStream, timeout: Duration) -> Option<Result<Request, String>> {
     stream.set_nonblocking(false).ok()?;
     stream.set_read_timeout(Some(timeout)).ok()?;
     let reader = BufReader::new(stream.try_clone().ok()?);
@@ -103,10 +113,14 @@ fn read_request_within(stream: &UnixStream, timeout: Duration) -> Option<Request
     let mut limited = reader.take(MAX_REQUEST_BYTES);
     limited.read_line(&mut line).ok()?;
 
-    serde_json::from_str::<Request>(&line).ok()
+    if line.trim().is_empty() {
+        return None;
+    }
+
+    Some(serde_json::from_str::<Request>(&line).map_err(|err| err.to_string()))
 }
 
-/// Answer a connection that could not be parsed.
+/// Answer a line that could not be parsed.
 ///
 /// Kept here so the caller does not have to construct a `WireError` at every
 /// site, and so the "id 0 means unparseable" convention lives in one place.
@@ -142,12 +156,13 @@ mod tests {
             .shutdown(std::net::Shutdown::Write)
             .expect("shuts down");
 
-        let (request, mut stream) = server.accept().expect("accepts").expect("has a client");
+        let mut incoming = server.accept().expect("accepts").expect("has a client");
+        let request = incoming.request.expect("a well-formed request");
         let response = Response::Ok {
             id: request.id,
             result: Payload::Empty(Empty),
         };
-        reply(&mut stream, &response).expect("replies");
+        reply(&mut incoming.stream, &response).expect("replies");
 
         let mut reply_text = String::new();
         BufReader::new(client)
@@ -191,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn nonsense_is_refused_without_dropping_the_connection() {
+    fn nonsense_is_answered_rather_than_dropped() {
         let dir = temp_dir("bad");
         let path = dir.join("1.sock");
         let server = Server::bind(&path).expect("binds");
@@ -202,25 +217,11 @@ mod tests {
             .shutdown(std::net::Shutdown::Write)
             .expect("shuts down");
 
-        // An unparseable line yields no request, so the daemon has nothing to
-        // answer and simply moves on; the connection ends when the stream drops.
-        assert!(
-            server.accept().expect("accepts").is_none(),
-            "an unparseable line yields no request"
-        );
-
-        // The failure reply itself is what a stricter caller would send, so it is
-        // exercised on a real request/reply pair.
-        let mut client = UnixStream::connect(&path).expect("connects");
-        client
-            .write_all(b"{\"id\":1,\"verb\":\"status\"}\n")
-            .expect("writes");
-        client
-            .shutdown(std::net::Shutdown::Write)
-            .expect("shuts down");
-
-        let (_, mut server_side) = server.accept().expect("accepts").expect("has a request");
-        reply_parse_failure(&mut server_side, String::from("bad json")).expect("replies");
+        // The line arrives but is not a request: the client is still waiting, so it
+        // has to be answered rather than left with a closed socket and no idea why.
+        let mut incoming = server.accept().expect("accepts").expect("has a client");
+        let message = incoming.request.expect_err("not a request");
+        reply_parse_failure(&mut incoming.stream, message).expect("replies");
 
         let mut text = String::new();
         BufReader::new(client).read_line(&mut text).expect("reads");
