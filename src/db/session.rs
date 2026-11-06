@@ -22,10 +22,6 @@ pub struct Session {
     pub title: String,
     /// Whether an idle inhibitor covered this stretch, such as a playing video.
     pub passive: bool,
-    /// Whether the row is finished. A run of the daemon that ends abruptly
-    /// leaves rows open, which the next start closes rather than counting as
-    /// unbounded time.
-    pub closed: bool,
 }
 
 impl Session {
@@ -119,7 +115,6 @@ mod tests {
             app_id: String::from("x"),
             title: String::new(),
             passive: false,
-            closed: true,
         };
         assert_eq!(session.duration(), chrono::Duration::zero());
     }

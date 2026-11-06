@@ -175,7 +175,9 @@ impl Store {
         let window_end = local_midnight(to.succ_opt().unwrap_or(to)).timestamp();
 
         let mut stmt = self.conn.prepare(
-            "SELECT id, start, end, app_id, title, passive, closed \
+            // `closed` is not selected: the rows below are all finished by the
+            // filter, so reading the column back would only ever confirm that.
+            "SELECT id, start, end, app_id, title, passive \
              FROM session WHERE closed = 1 AND end > ?1 AND start < ?2 ORDER BY start",
         )?;
 
@@ -189,7 +191,6 @@ impl Store {
                 app_id: row.get(3)?,
                 title: row.get(4)?,
                 passive: row.get::<_, i64>(5)? != 0,
-                closed: row.get::<_, i64>(6)? != 0,
             })
         })?;
 
@@ -232,7 +233,7 @@ impl Store {
         Ok(count.max(0).unsigned_abs())
     }
 
-    /// Whether a row is still open. Used by tests and by `status`.
+    /// Whether a row is still open. Used by the tests; `status` counts rows instead.
     pub fn is_open(&self, id: i64) -> Result<Option<bool>, Error> {
         let value = self
             .conn
@@ -282,7 +283,6 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].app_id, "kitty");
         assert_eq!(sessions[0].duration(), chrono::Duration::minutes(5));
-        assert!(sessions[0].closed);
     }
 
     #[test]
