@@ -119,6 +119,19 @@ pub fn run(config: &Resolved, config_path: &Path) -> Result<(), Error> {
     }
 
     let paths = crate::ipc::InstancePaths::for_pid(&runtime_dir, std::process::id());
+
+    // This instance's files must go away however the daemon ends, including a panic.
+    // Registered before the socket is bound so a failure to publish the metadata
+    // does not leave a socket behind, and scoped to this instance's own paths: the
+    // runtime directory is shared with every other session on the machine.
+    struct Cleanup(crate::ipc::InstancePaths);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.cleanup();
+        }
+    }
+    let _cleanup = Cleanup(paths.clone());
+
     let server = Server::bind(&paths.socket).map_err(|source| Error::Bind {
         path: paths.socket.clone(),
         source,
@@ -133,15 +146,6 @@ pub fn run(config: &Resolved, config_path: &Path) -> Result<(), Error> {
         path: paths.info.clone(),
         source,
     })?;
-
-    // The instance files must go away however the daemon ends, including a panic.
-    struct Cleanup(PathBuf);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-    let _cleanup = Cleanup(runtime_dir.clone());
 
     log_info(&format!(
         "recording to {} (closed {dangling} dangling interval(s))",
