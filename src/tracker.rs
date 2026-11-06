@@ -495,17 +495,26 @@ impl Tracker {
     /// cannot be read, because crediting time to a guess would be worse than
     /// crediting it to the terminal that is unmistakably on screen.
     fn resolve_app_id(&self, focus: &Focus) -> String {
-        let splits = self
+        let entry = self
             .terminals
             .iter()
-            .any(|entry| entry.split && entry.app_ids.iter().any(|id| id == &focus.app_id));
-        if !splits {
-            return focus.app_id.clone();
-        }
-        let Some(pid) = focus.pid else {
+            .find(|entry| entry.split && entry.app_ids.iter().any(|id| id == &focus.app_id));
+        let Some(entry) = entry else {
             return focus.app_id.clone();
         };
-        crate::terminal::foreground_process_name(pid).unwrap_or_else(|| focus.app_id.clone())
+
+        // `fallback` is read here rather than hard-coded so the setting means what
+        // the preset says it means. With one variant it can only be the terminal,
+        // but a setting that is parsed and ignored is a trap for whoever adds the
+        // second one.
+        let fallback = match entry.fallback {
+            crate::config::Fallback::Terminal => focus.app_id.clone(),
+        };
+
+        let Some(pid) = focus.pid else {
+            return fallback;
+        };
+        crate::terminal::foreground_process_name(pid).unwrap_or(fallback)
     }
 }
 
