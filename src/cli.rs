@@ -202,16 +202,6 @@ pub fn command() -> clap::Command {
     Cli::command()
 }
 
-/// Write a completion script for `shell` into `out`.
-///
-/// The program name is passed explicitly rather than taken from the crate name:
-/// the two happen to agree today, and a rename should not silently produce a
-/// completion script that completes a command nobody has.
-///
-/// Errors are returned rather than panicking, which is what `clap_complete`'s
-/// own `generate` does. A completion script is usually piped into `head`, `less`
-/// or a file, and a reader that stops early closes the pipe: that is a normal
-/// way to read a few lines, not a reason to abort with a backtrace.
 /// The script itself, as text.
 ///
 /// Generated into memory rather than straight into the caller's writer because
