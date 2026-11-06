@@ -582,6 +582,17 @@ impl Daemon {
 
     /// The daemon's own status.
     fn status(&self) -> Status {
+        // A failed count reads as "the database is empty", which is the opposite of
+        // what it means. The number stays zero — the wire format has no room for an
+        // error — but the journal records that it is not a real zero.
+        let intervals = match self.store.count() {
+            Ok(count) => count,
+            Err(err) => {
+                log_warn(&format!("cannot count intervals: {err}"));
+                0
+            }
+        };
+
         Status {
             paused: self.tracker.paused(),
             live: self.tracker.live().map(|live| {
@@ -590,7 +601,7 @@ impl Daemon {
                 status
             }),
             pid: std::process::id(),
-            intervals: self.store.count().unwrap_or(0),
+            intervals,
         }
     }
 
