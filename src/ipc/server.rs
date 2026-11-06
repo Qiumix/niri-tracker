@@ -28,6 +28,14 @@ const MAX_REQUEST_BYTES: u64 = 64 * 1024;
 /// anywhere near this long to write a single line.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long a client may take to accept its reply.
+///
+/// The reply is a few hundred bytes and a healthy client is reading, so this is
+/// generous. Without it, a client that asks a question and then stops reading can
+/// fill its socket buffer and block the daemon's only thread on the write — the
+/// same stall the read timeout exists to prevent, arriving from the other side.
+const REPLY_TIMEOUT: Duration = Duration::from_secs(1);
+
 /// A bound socket awaiting connections.
 pub struct Server {
     listener: UnixListener,
@@ -88,7 +96,9 @@ pub struct Incoming {
 
 /// Write a response to `stream` and close it.
 pub fn reply(stream: &mut UnixStream, response: &Response) -> std::io::Result<()> {
-    stream.write_all(super::protocol::encode_line(response)?.as_bytes())?;
+    let line = super::protocol::encode_line(response)?;
+    stream.set_write_timeout(Some(REPLY_TIMEOUT))?;
+    stream.write_all(line.as_bytes())?;
     stream.flush()
 }
 
