@@ -49,8 +49,8 @@ fn run(cli: Cli) -> Result<ExitCode, BoxError> {
             Ok(ExitCode::SUCCESS)
         }
 
-        Command::Report(args) => report(&config_path, args),
-        Command::Details(args) => details(&config_path, args),
+        Command::Report(args) => report(args),
+        Command::Details(args) => details(args),
 
         Command::Status => {
             let response = client()?.simple(Verb::Status)?;
@@ -135,11 +135,11 @@ fn client() -> Result<Client, BoxError> {
 }
 
 /// A report, either as a table or as JSON.
-fn report(config_path: &std::path::Path, args: ReportArgs) -> Result<ExitCode, BoxError> {
-    // The configuration is read for the alias rules, not for a daemon setting: a
-    // report is shaped by the user's aliases even though the daemon does the work.
-    let _ = config::load_from(config_path)?;
-
+///
+/// The configuration is not read here. Aliases and title normalisation are applied
+/// by the daemon, which is the only place that knows them, so loading the file on
+/// this side would parse it and throw the result away.
+fn report(args: ReportArgs) -> Result<ExitCode, BoxError> {
     let query = query_args(
         args.from,
         args.to,
@@ -154,7 +154,7 @@ fn report(config_path: &std::path::Path, args: ReportArgs) -> Result<ExitCode, B
 }
 
 /// Window titles of one application.
-fn details(_config_path: &std::path::Path, args: DetailsArgs) -> Result<ExitCode, BoxError> {
+fn details(args: DetailsArgs) -> Result<ExitCode, BoxError> {
     let query = query_args(
         args.from,
         args.to,
