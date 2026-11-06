@@ -349,22 +349,26 @@ impl Daemon {
         }
 
         for event in events {
-            // Logged because these transitions are invisible otherwise: a user
-            // wondering why their report is short needs to see idle detection
-            // doing something.
-            log_info(&format!("idle: {event:?}"));
             match event {
                 IdleEvent::InputIdle => {
                     // The event arrives one timeout after input stopped, so the
                     // instant to cut at is one timeout back.
-                    let idled_at = Utc::now()
-                        - chrono::Duration::from_std(self.config.idle_timeout).unwrap_or_default();
-                    self.decision(|tracker| tracker.on_input_idle(idled_at, &clock));
+                    let idle_for =
+                        chrono::Duration::from_std(self.config.idle_timeout).unwrap_or_default();
+                    log_info(&format!(
+                        "idle: input stopped {} ago",
+                        crate::config::format_duration(self.config.idle_timeout)
+                    ));
+                    self.decision(|tracker| tracker.on_input_idle(Utc::now() - idle_for, &clock));
                 }
                 IdleEvent::InputActive => {
+                    log_info("idle: input resumed");
                     self.decision(|tracker| tracker.on_input_active(&clock));
                 }
-                // Already handled above, before idleness.
+                // Not logged. The inhibitor-aware notification also fires whenever
+                // input stops or resumes, so reporting the event itself would print
+                // a line that means nothing on every transition. The derived state
+                // above is logged instead, and only when it actually changes.
                 IdleEvent::InhibitorChanged => {}
             }
         }
