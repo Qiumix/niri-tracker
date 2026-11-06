@@ -306,9 +306,15 @@ impl Daemon {
             self.serve_clients();
 
             // Checkpoint on the timer.
-            if std::time::Instant::now() >= next_tick {
+            let now = std::time::Instant::now();
+            if now >= next_tick {
                 self.decision(|tracker| tracker.on_tick(&clock));
-                next_tick += crate::tracker::TICK;
+                // The next deadline is counted from now, not from the one that was
+                // missed. A suspend leaves the deadline hours in the past, and
+                // adding would fire hundreds of catch-up ticks in a row — each one
+                // a database write — for time the tracker has already decided not
+                // to count.
+                next_tick = now + crate::tracker::TICK;
             }
 
             std::thread::sleep(Duration::from_millis(50));
