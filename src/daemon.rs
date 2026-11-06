@@ -469,13 +469,26 @@ impl Daemon {
                     return;
                 }
             };
-            let Some((request, mut stream)) = accepted else {
+            let Some(mut incoming) = accepted else {
                 return;
             };
+            let stream = &mut incoming.stream;
 
-            let response = self.handle(&request);
-            if let Err(err) = crate::ipc::server::reply(&mut stream, &response) {
-                log_warn(&format!("cannot reply to a client: {err}"));
+            // A line that was not a request still gets an answer: the client is
+            // waiting on this connection either way, and telling it what was wrong
+            // is more use than dropping the socket.
+            match incoming.request {
+                Ok(request) => {
+                    let response = self.handle(&request);
+                    if let Err(err) = crate::ipc::server::reply(stream, &response) {
+                        log_warn(&format!("cannot reply to a client: {err}"));
+                    }
+                }
+                Err(message) => {
+                    if let Err(err) = crate::ipc::server::reply_parse_failure(stream, message) {
+                        log_warn(&format!("cannot reply to a client: {err}"));
+                    }
+                }
             }
         }
     }
