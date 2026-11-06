@@ -144,9 +144,15 @@ impl Window {
 /// Blocks forever: it is meant to run on its own thread, because the stream is a
 /// blocking socket and the daemon has other work to do. Returns when the
 /// connection fails, which the caller treats as "reconnect".
-pub fn run_event_stream<F>(mut on_event: F) -> Result<(), Error>
+/// `on_connected` runs once the stream is established and before the first event.
+///
+/// The caller needs that moment to tell "connected, then dropped" from "could not
+/// connect": only the first deserves a backoff reset, and the function cannot
+/// report it any other way without returning while the stream is still live.
+pub fn run_event_stream<F, R>(mut on_event: F, mut on_connected: R) -> Result<(), Error>
 where
     F: FnMut(Event),
+    R: FnMut(),
 {
     let mut socket = niri_ipc::socket::Socket::connect()?;
     match socket.send(Request::EventStream)? {
@@ -154,6 +160,8 @@ where
         Ok(other) => return Err(Error::Refused(format!("unexpected reply {other:?}"))),
         Err(message) => return Err(Error::Refused(message)),
     }
+
+    on_connected();
 
     let mut read = socket.read_events();
     loop {

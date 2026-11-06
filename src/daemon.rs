@@ -29,6 +29,12 @@ use crate::ipc::{
 use crate::report;
 use crate::tracker::{Effect, SystemClock, Tracker};
 
+/// How long to wait before retrying a lost compositor connection.
+const RECONNECT_BASE: Duration = Duration::from_secs(1);
+
+/// The longest the reconnect delay grows to.
+const RECONNECT_MAX: Duration = Duration::from_secs(30);
+
 /// Why the daemon could not run.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -237,19 +243,26 @@ impl Daemon {
         let (sender, receiver) = channel();
         let handle = std::thread::spawn(move || {
             let mut windows: Vec<niri::Window> = Vec::new();
-            let mut backoff = Duration::from_secs(1);
+            let mut backoff = RECONNECT_BASE;
             loop {
                 // The closure cannot break the stream, so a send failure is
                 // remembered and acted on once the stream ends: at that point the
                 // daemon is gone and reconnecting would be pointless.
                 let mut receiver_gone = false;
-                let result = niri::run_event_stream(|event| {
-                    if let Some(watch) = niri::interpret(&event, &mut windows)
-                        && sender.send(watch).is_err()
-                    {
-                        receiver_gone = true;
-                    }
-                });
+                let result = niri::run_event_stream(
+                    |event| {
+                        if let Some(watch) = niri::interpret(&event, &mut windows)
+                            && sender.send(watch).is_err()
+                        {
+                            receiver_gone = true;
+                        }
+                    },
+                    // A connection that succeeded resets the backoff. Without
+                    // this, a stream that ran happily for hours would wait the
+                    // full 30 s after a single drop, because the delay only ever
+                    // grows.
+                    || backoff = RECONNECT_BASE,
+                );
                 if receiver_gone {
                     return;
                 }
@@ -259,7 +272,7 @@ impl Daemon {
                     ));
                 }
                 std::thread::sleep(backoff);
-                backoff = (backoff * 2).min(Duration::from_secs(30));
+                backoff = (backoff * 2).min(RECONNECT_MAX);
             }
         });
 
