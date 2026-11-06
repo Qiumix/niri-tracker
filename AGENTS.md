@@ -7,7 +7,7 @@ alternatives that were ruled out.
 ## Build and check
 
 ```sh
-cargo test                     # 133 tests, no external services
+cargo test                     # 145 tests, no external services
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 
@@ -103,6 +103,11 @@ See `docs/protocol.md`. A new verb is additive and does not bump
   is inhibited by `zwp_idle_inhibitor_v1`; `get_input_idle_notification` is not.
   Input idle *without* the first one firing is the video case.
 - **`GlobalList::bind` takes a version range, not a global name.**
+- **The session lock is a `flock`, and its file is never unlinked.** Unlinking it
+  would let a second daemon create a fresh file and lock that instead, and both
+  would believe they hold the session.
+- **An instance removes only its own socket and metadata.** The runtime directory
+  is shared with every other session on the machine.
 - **Reading and dispatching Wayland events are two steps.** `dispatch_pending`
   only handles what is already buffered; without a `prepare_read` first, nothing
   ever arrives and the daemon silently never learns anything.

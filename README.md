@@ -222,10 +222,19 @@ the file in your editor.
 | Database | `$XDG_DATA_HOME/niri-tracker/track.db` | `NIRI_TRACKER_DATA_DIR` |
 | Configuration | `$XDG_CONFIG_HOME/niri-tracker/config.toml` | `NIRI_TRACKER_CONFIG_DIR` |
 | Control socket | `$XDG_RUNTIME_DIR/niri-tracker/<pid>.sock` | `NIRI_TRACKER_RUNTIME_DIR` |
+| Session lock | `$XDG_RUNTIME_DIR/niri-tracker/<display>.lock` | `NIRI_TRACKER_RUNTIME_DIR` |
 
 One daemon per Wayland session; starting a second one in the same session is
-refused. Each names its socket after its own pid, so two sessions (two niri
-logins, or a nested compositor) never collide.
+refused by an exclusive lock on that session's `.lock` file. The kernel drops the
+lock when the process ends — including a crash — and each instance removes only
+its own socket and metadata when it exits, because two sessions on one machine
+are normal (two niri logins, a nested compositor).
+
+The lock file stays behind: removing it would let a second daemon create a fresh
+one and believe the session is free.
+
+If neither `XDG_CONFIG_HOME` nor `HOME` is set, the daemon refuses to guess rather
+than resolving to a path relative to its working directory.
 
 The database is plain SQLite, written by the daemon alone:
 
@@ -241,7 +250,7 @@ SELECT app_id, SUM(end - start) FROM session GROUP BY app_id ORDER BY 2 DESC;
 | Nothing focused (lock screen, overview) | Nothing; a gap under 2 s is forgiven, since the overview blinks focus away |
 | Input idle past the timeout | The interval ends **when input stopped** |
 | Idle, but an inhibitor is held | Keeps counting, flagged passive |
-| Machine suspends | The interval ends where the sleep began |
+| Machine suspends | The interval ends where the sleep began; a new one begins on waking, unless paused or idle — idle reopens only with an inhibitor, as passive |
 | Daemon killed | The next start closes the dangling interval at its last checkpoint |
 | `pause` | Nothing recorded; not persisted, so a restart resumes recording |
 

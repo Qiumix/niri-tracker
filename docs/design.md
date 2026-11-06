@@ -73,7 +73,7 @@ This is also why the protocol version matters: version 1 lacks
 `get_input_idle_notification`, so the comparison is impossible. The daemon refuses
 version 1 rather than silently degrading.
 
-## Stories are clipped, and may cross midnight
+## Stretches are clipped, and may cross midnight
 
 A stretch is recorded as one row, and a row can span midnight. Reports therefore
 select by overlap — `end > from AND start < to` — and clip each stretch to the
@@ -115,6 +115,17 @@ was lost*, not at the tick.
 while nothing is focused. The two cases — lock screen for an hour, overview for
 half a second — are told apart by whether focus comes back.
 
+The comparison is on the **resolved** name, not the compositor's `app_id`. For a
+terminal those differ — the interval holds `nvim`, the compositor says `kitty` —
+and comparing the raw value meant the grace never repaired a blink on a terminal,
+so every overview turned an editing session into two rows.
+
+The same comparison makes a focus event for the window already being timed a
+no-op. niri sends a window list on every window opening or closing anywhere on
+the session, and the daemon re-queries the focus in response; without this, one
+interval would be replaced by another dozens of times an hour while nothing
+actually changed on screen.
+
 ## Suspends are detected by the two clocks disagreeing
 
 `Instant` reads `CLOCK_MONOTONIC`, which **does not advance while suspended**.
@@ -130,6 +141,12 @@ unusual and extends the interval across the entire sleep.
 The threshold is 30 s of disagreement, which is well above ordinary drift between
 the two clocks and well below any real suspend.
 
+Waking produces no focus event, so the tick that detects the suspend is also what
+starts the next interval; otherwise everything after a sleep would be lost until
+the user happened to switch windows. A paused tracker stays closed, and an idle
+one reopens only if an inhibitor is held — a video survives a suspend, an empty
+room does not — marking the new interval passive, which is what it is.
+
 ## Terminals are resolved through /proc
 
 A terminal reports the same `app_id` for every window and every tab, so an hour in
@@ -140,6 +157,14 @@ The kernel already knows this. `/proc/<pid>/stat` carries `tpgid`, the process
 group that owns the terminal, so a descendant of the terminal whose own process
 group equals that value *is* the foreground job. No cooperation from the terminal,
 no dependence on the shell setting a title, no terminal-specific code.
+
+Only the terminal's own subtree is ever interesting, and kernels built with
+`CONFIG_PROC_CHILDREN` — every distribution kernel — publish each thread's direct
+children in `/proc/<pid>/task/<tid>/children`, so the subtree is walked downward
+in a dozen file reads rather than reconstructed from a scan of every process.
+`children` belongs to a thread, not a process, so all of them are read and merged.
+A kernel without the feature falls back to the whole-table scan; walking reports
+"unsupported" rather than "nothing below", so the two answers stay distinct.
 
 Three details matter:
 
@@ -185,6 +210,12 @@ forever.
 
 Absence of the file is not an error — that is the normal case on a fresh install.
 
+The same reasoning applies to the location itself: with neither `XDG_CONFIG_HOME`
+nor `HOME` set, the directory functions used to build a **relative** path, which
+anchors the database to whatever directory the process started in. They report an
+error naming the variable they consulted instead, because writing a database
+somewhere nobody chose is the same failure one level down.
+
 ## Arrays append to the preset
 
 Scalars merge cleanly: a user value overrides a preset value, and "absent" is
@@ -204,6 +235,24 @@ rather than staying paused.
 A tracker that stays paused after a restart fails in the hardest way to notice:
 the reports are simply short, and nothing says why. Pausing is a momentary action
 and should not survive the process that it was asked of.
+
+## One daemon per session, decided by a lock
+
+Two daemons recording the same session would count every second twice, and
+nothing about the resulting report would look wrong. Looking for a live instance
+and refusing if one is found sounds like enough, but it is a read followed by a
+decision: two daemons started at the same moment both find none.
+
+So an exclusive `flock` on `<display>.lock` decides. The kernel releases it when
+the process dies, including on a panic, which the pid-named files cannot promise,
+and the holder writes its pid into the file so a refusal can still name it.
+
+The lock file is never unlinked. Unlinking would let a second process create a
+fresh file and lock that instead, and both would believe they hold the slot.
+
+Each instance removes **its own** socket and metadata when it exits, never the
+directory: the runtime directory is shared by every session on the machine, and
+several daemons are normal — two niri logins, a nested compositor.
 
 ## Files
 

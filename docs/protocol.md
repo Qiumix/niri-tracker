@@ -8,14 +8,22 @@ matters more than saving bytes on a socket that sees a few messages a minute.
 
 ```text
 $XDG_RUNTIME_DIR/niri-tracker/
-├── 1234.sock     listening socket, named after the daemon's pid
-└── 1234.info     key=value metadata, written atomically
+├── wayland-1.lock   exclusive lock, one per Wayland session
+├── 1234.sock        listening socket, named after the daemon's pid
+└── 1234.info        key=value metadata, written atomically
 ```
 
 `NIRI_TRACKER_RUNTIME_DIR` overrides the directory. One daemon per Wayland
 session; several sessions on one machine each get their own files, and the pid in
 the name means a new instance always gets a fresh path with no bind race against
 a dying predecessor.
+
+The `.lock` file is what decides which daemon may run: whoever holds its `flock`
+owns the session, and the kernel releases it when that process ends. The files
+below it are for discovery, not arbitration — a client finding two live instances
+is a bug in the lock, not something the client should resolve. The lock file is
+never removed, because a second process could create a fresh one and lock that
+instead.
 
 The `.info` file:
 
