@@ -275,11 +275,6 @@ impl Lock {
     }
 }
 
-/// The `WAYLAND_DISPLAY` of the current session, or a clear error.
-pub fn current_display() -> Result<String, std::env::VarError> {
-    std::env::var("WAYLAND_DISPLAY")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

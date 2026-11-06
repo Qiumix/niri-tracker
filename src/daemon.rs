@@ -86,10 +86,6 @@ pub enum Error {
         #[source]
         source: std::io::Error,
     },
-
-    /// The compositor connection failed in a way that is not recoverable.
-    #[error("compositor connection failed: {0}")]
-    Compositor(String),
 }
 
 /// Run the daemon until asked to stop.
