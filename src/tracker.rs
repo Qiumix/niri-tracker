@@ -190,6 +190,9 @@ impl Tracker {
         self.paused = true;
         // The idle flag is deliberately kept: after resuming, the tracker must
         // still know the user is away, or it counts the time until input returns.
+        // A pending focus loss is not kept: the interval it belongs to has just been
+        // closed, and settling it later would look for something already finished.
+        self.unfocused_since = None;
         self.close_at(clock.wall())
     }
 
