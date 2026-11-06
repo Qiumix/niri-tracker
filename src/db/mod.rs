@@ -76,20 +76,20 @@ impl Store {
     fn create_schema(&self) -> Result<(), Error> {
         self.conn.execute_batch(
             r#"
-			CREATE TABLE IF NOT EXISTS session (
-				id      INTEGER PRIMARY KEY AUTOINCREMENT,
-				start   INTEGER NOT NULL,
-				end     INTEGER NOT NULL,
-				day     TEXT    NOT NULL,
-				app_id  TEXT    NOT NULL,
-				title   TEXT    NOT NULL,
-				passive INTEGER NOT NULL DEFAULT 0,
-				closed  INTEGER NOT NULL DEFAULT 0
-			);
+            CREATE TABLE IF NOT EXISTS session (
+                id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                start   INTEGER NOT NULL,
+                end     INTEGER NOT NULL,
+                day     TEXT    NOT NULL,
+                app_id  TEXT    NOT NULL,
+                title   TEXT    NOT NULL,
+                passive INTEGER NOT NULL DEFAULT 0,
+                closed  INTEGER NOT NULL DEFAULT 0
+            );
 
-			CREATE INDEX IF NOT EXISTS session_day ON session (day, app_id);
-			CREATE INDEX IF NOT EXISTS session_start ON session (start);
-			"#,
+            CREATE INDEX IF NOT EXISTS session_day ON session (day, app_id);
+            CREATE INDEX IF NOT EXISTS session_start ON session (start);
+            "#,
         )?;
         Ok(())
     }
@@ -107,7 +107,7 @@ impl Store {
             .to_string();
         self.conn.execute(
             "INSERT INTO session (start, end, day, app_id, title, passive, closed) \
-			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
             params![
                 live.start.timestamp(),
                 live.start.timestamp(),
@@ -176,7 +176,7 @@ impl Store {
 
         let mut stmt = self.conn.prepare(
             "SELECT id, start, end, app_id, title, passive, closed \
-			 FROM session WHERE closed = 1 AND end > ?1 AND start < ?2 ORDER BY start",
+             FROM session WHERE closed = 1 AND end > ?1 AND start < ?2 ORDER BY start",
         )?;
 
         let rows = stmt.query_map(params![window_start, window_end], |row| {

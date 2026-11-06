@@ -123,9 +123,9 @@ mod tests {
         let preset: Config = toml::from_str(PRESET).unwrap();
         let user = parse_user(
             r#"
-			[idle]
-			timeout = "5m"
-			"#,
+            [idle]
+            timeout = "5m"
+            "#,
         )
         .unwrap();
         let resolved = preset.merge(user).resolve().unwrap();
@@ -138,9 +138,9 @@ mod tests {
         let preset_terminals = preset.terminal.as_ref().unwrap().len();
         let user = parse_user(
             r#"
-			[[terminal]]
-			app_ids = ["myterm"]
-			"#,
+            [[terminal]]
+            app_ids = ["myterm"]
+            "#,
         )
         .unwrap();
         let resolved = preset.merge(user).resolve().unwrap();
@@ -152,11 +152,11 @@ mod tests {
         let preset: Config = toml::from_str(PRESET).unwrap();
         let user = parse_user(
             r#"
-			merge_preset_arrays = false
+            merge_preset_arrays = false
 
-			[[terminal]]
-			app_ids = ["myterm"]
-			"#,
+            [[terminal]]
+            app_ids = ["myterm"]
+            "#,
         )
         .unwrap();
         let resolved = preset.merge(user).resolve().unwrap();
@@ -168,9 +168,9 @@ mod tests {
     fn an_unknown_key_is_rejected() {
         let err = parse_user(
             r#"
-			[idle]
-			time_out = "5m"
-			"#,
+            [idle]
+            time_out = "5m"
+            "#,
         );
         assert!(
             err.is_err(),
@@ -183,9 +183,9 @@ mod tests {
         let preset: Config = toml::from_str(PRESET).unwrap();
         let user = parse_user(
             r#"
-			[idle]
-			timeout = "soon"
-			"#,
+            [idle]
+            timeout = "soon"
+            "#,
         )
         .unwrap();
         let err = preset.merge(user).resolve().unwrap_err();
@@ -198,14 +198,14 @@ mod tests {
         let preset: Config = toml::from_str(PRESET).unwrap();
         let user = parse_user(
             r#"
-			[[alias]]
-			name = "Same"
-			app_ids = ["a"]
+            [[alias]]
+            name = "Same"
+            app_ids = ["a"]
 
-			[[alias]]
-			name = "Same"
-			app_ids = ["b"]
-			"#,
+            [[alias]]
+            name = "Same"
+            app_ids = ["b"]
+            "#,
         )
         .unwrap();
         assert!(preset.merge(user).resolve().is_err());
@@ -234,9 +234,9 @@ mod tests {
         let preset: Config = toml::from_str(PRESET).unwrap();
         let user = parse_user(
             r#"
-			[[terminal]]
-			app_ids = []
-			"#,
+            [[terminal]]
+            app_ids = []
+            "#,
         )
         .unwrap();
         assert!(preset.merge(user).resolve().is_err());

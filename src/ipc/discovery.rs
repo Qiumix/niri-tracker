@@ -44,10 +44,10 @@ impl InstanceInfo {
     pub fn to_file_contents(&self) -> String {
         format!(
             "version={INFO_VERSION}\n\
-			 wayland_display={}\n\
-			 socket={}\n\
-			 pid={}\n\
-			 started={}\n",
+             wayland_display={}\n\
+             socket={}\n\
+             pid={}\n\
+             started={}\n",
             self.wayland_display,
             self.socket.display(),
             self.pid,

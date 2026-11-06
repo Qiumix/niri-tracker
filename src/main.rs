@@ -106,29 +106,29 @@ fn client() -> Result<Client, BoxError> {
     let alive: Vec<_> = found.into_iter().filter(|entry| entry.alive).collect();
 
     match alive.as_slice() {
-		[] => Err(format!(
-			"no running niri-tracker daemon for this session; start one with `niri-tracker daemon`\n  \
-			 (looked for sockets in {})",
-			runtime_dir.display()
-		)
-		.into()),
-		[only] => Ok(Client::connect(&only.info.socket)?),
-		[first, rest @ ..] => {
-			// More than one should be impossible because the daemon refuses to be
-			// the second, but a leftover from a crash can look alive briefly. The
-			// newest is the right one to ask.
-			let newest = alive
-				.iter()
-				.max_by_key(|entry| entry.info.started)
-				.unwrap_or(first);
-			eprintln!(
-				"niri-tracker: warning: {} daemons found; using pid {}",
-				rest.len() + 1,
-				newest.info.pid
-			);
-			Ok(Client::connect(&newest.info.socket)?)
-		}
-	}
+        [] => Err(format!(
+            "no running niri-tracker daemon for this session; start one with `niri-tracker daemon`\n  \
+             (looked for sockets in {})",
+            runtime_dir.display()
+        )
+        .into()),
+        [only] => Ok(Client::connect(&only.info.socket)?),
+        [first, rest @ ..] => {
+            // More than one should be impossible because the daemon refuses to be
+            // the second, but a leftover from a crash can look alive briefly. The
+            // newest is the right one to ask.
+            let newest = alive
+                .iter()
+                .max_by_key(|entry| entry.info.started)
+                .unwrap_or(first);
+            eprintln!(
+                "niri-tracker: warning: {} daemons found; using pid {}",
+                rest.len() + 1,
+                newest.info.pid
+            );
+            Ok(Client::connect(&newest.info.socket)?)
+        }
+    }
 }
 
 /// A report, either as a table or as JSON.
@@ -367,7 +367,7 @@ fn init_config(path: &std::path::Path, force: bool) -> Result<ExitCode, BoxError
     if header.is_empty() {
         eprintln!(
             "note: no JSON schema found, so the file has no `#:schema` line; \
-			 run `niri-tracker schema > schema.json` to create one"
+             run `niri-tracker schema > schema.json` to create one"
         );
     }
 
