@@ -12,12 +12,21 @@
 
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::time::Duration;
 
 use super::protocol::{Request, Response};
 
 /// Upper bound on one request line. Generous for the protocol, small enough that
 /// a hostile client cannot make the daemon allocate without limit.
 const MAX_REQUEST_BYTES: u64 = 64 * 1024;
+
+/// How long a client may take to send its one line.
+///
+/// The request is read on the same thread that records intervals, so a local
+/// client that connects and then says nothing would otherwise stall the daemon
+/// for as long as it cared to hold the socket open. Nothing legitimate takes
+/// anywhere near this long to write a single line.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A bound socket awaiting connections.
 pub struct Server {
@@ -79,7 +88,13 @@ pub fn reply(stream: &mut UnixStream, response: &Response) -> std::io::Result<()
 /// with a failure rather than the stream being dropped silently, so a confused
 /// client learns what went wrong.
 fn read_request(stream: &UnixStream) -> Option<Request> {
+    read_request_within(stream, REQUEST_TIMEOUT)
+}
+
+/// The same, with the timeout given, so tests need not wait five seconds.
+fn read_request_within(stream: &UnixStream, timeout: Duration) -> Option<Request> {
     stream.set_nonblocking(false).ok()?;
+    stream.set_read_timeout(Some(timeout)).ok()?;
     let reader = BufReader::new(stream.try_clone().ok()?);
 
     let mut line = String::new();
@@ -155,6 +170,24 @@ mod tests {
         let server = Server::bind(&dir.join("1.sock")).expect("binds");
         assert!(server.accept().expect("accepts").is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_client_that_never_speaks_does_not_block_the_daemon() {
+        // The request is read on the thread that records intervals, so a client
+        // that connects and says nothing must not be able to hold it.
+        let (ours, _silent) = UnixStream::pair().expect("socket pair");
+        let started = std::time::Instant::now();
+
+        assert!(
+            read_request_within(&ours, Duration::from_millis(50)).is_none(),
+            "a silent client yields no request"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "reading must give up after the timeout, took {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
