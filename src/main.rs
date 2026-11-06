@@ -41,6 +41,9 @@ fn run(cli: Cli) -> Result<ExitCode, BoxError> {
 
     match cli.command {
         Command::Daemon => {
+            // Before anything can complain, so a configuration error is reported
+            // through the same formatting as everything else.
+            niri_tracker::daemon::init_logging();
             let resolved = config::load_from(&config_path)?;
             niri_tracker::daemon::run(&resolved, &config_path)?;
             Ok(ExitCode::SUCCESS)

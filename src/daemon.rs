@@ -100,7 +100,7 @@ pub fn run(config: &Resolved, config_path: &Path) -> Result<(), Error> {
         match store.delete_before(cutoff) {
             Ok(0) => {}
             Ok(removed) => log_info(&format!("removed {removed} intervals older than {cutoff}")),
-            Err(err) => log_info(&format!("cannot apply retention: {err}")),
+            Err(err) => log_warn(&format!("cannot apply retention: {err}")),
         }
     }
 
@@ -146,9 +146,54 @@ pub fn run(config: &Resolved, config_path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-/// Print a line for the journal.
+/// Start logging.
+///
+/// Colours are enabled only when stderr is a terminal. Running under systemd
+/// sends this to the journal, where escape codes are noise rather than help, and
+/// `NO_COLOR` is honoured for people who do not want them anywhere.
+pub fn init_logging() {
+    use std::io::IsTerminal as _;
+
+    let colours = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_ansi(colours)
+        // The binary's own name is the only target worth printing, and it would
+        // appear on every line.
+        .with_target(false)
+        // Local time, not the subscriber's default UTC: this is a desktop tool and
+        // the reader is in the same timezone as the machine.
+        .with_timer(LocalTime)
+        .with_writer(std::io::stderr)
+        .init();
+}
+
+/// Timestamps as `10:42:07.123`, in local time.
+struct LocalTime;
+
+impl tracing_subscriber::fmt::time::FormatTime for LocalTime {
+    fn format_time(
+        &self,
+        writer: &mut tracing_subscriber::fmt::format::Writer<'_>,
+    ) -> std::fmt::Result {
+        write!(writer, "{}", chrono::Local::now().format("%H:%M:%S%.3f"))
+    }
+}
+
+/// Something that happened, worth a line in the journal.
 fn log_info(message: &str) {
-    eprintln!("niri-tracker: {message}");
+    tracing::info!("{message}");
+}
+
+/// Something that went wrong but did not stop the daemon.
+fn log_warn(message: &str) {
+    tracing::warn!("{message}");
+}
+
+/// Something that lost data.
+fn log_error(message: &str) {
+    tracing::error!("{message}");
 }
 
 /// The daemon's whole state.
@@ -209,7 +254,7 @@ impl Daemon {
                     return;
                 }
                 if let Err(err) = result {
-                    log_info(&format!(
+                    log_warn(&format!(
                         "compositor event stream ended: {err}; reconnecting"
                     ));
                 }
@@ -238,7 +283,7 @@ impl Daemon {
             Err(err) => {
                 // Not fatal: recording continues, it just cannot tell a watched
                 // video from an empty room.
-                log_info(&format!("idle detection unavailable: {err}"));
+                log_warn(&format!("idle detection unavailable: {err}"));
             }
         }
     }
@@ -320,7 +365,7 @@ impl Daemon {
                     self.decision(|tracker| tracker.on_focus(focus, &clock));
                 }
             }
-            Err(err) => log_info(&format!("cannot query the focused window: {err}")),
+            Err(err) => log_warn(&format!("cannot query the focused window: {err}")),
         }
     }
 
@@ -332,7 +377,7 @@ impl Daemon {
         let events = match idle.poll() {
             Ok(events) => events,
             Err(err) => {
-                log_info(&format!("idle detection stopped: {err}"));
+                log_warn(&format!("idle detection stopped: {err}"));
                 self.idle = None;
                 return;
             }
@@ -393,7 +438,7 @@ impl Daemon {
             let accepted = match self.server.accept() {
                 Ok(accepted) => accepted,
                 Err(err) => {
-                    log_info(&format!("control socket error: {err}"));
+                    log_warn(&format!("control socket error: {err}"));
                     return;
                 }
             };
@@ -403,7 +448,7 @@ impl Daemon {
 
             let response = self.answer(&request);
             if let Err(err) = crate::ipc::server::reply(&mut stream, &response) {
-                log_info(&format!("cannot reply to a client: {err}"));
+                log_warn(&format!("cannot reply to a client: {err}"));
             }
         }
     }
@@ -419,21 +464,21 @@ impl Daemon {
             match effect {
                 Effect::Open(live) => match self.store.begin(&live) {
                     Ok(id) => self.tracker.adopt(id),
-                    Err(err) => log_info(&format!("cannot record an interval: {err}")),
+                    Err(err) => log_error(&format!("cannot record an interval: {err}")),
                 },
                 Effect::Extend { id, end } => {
                     if let Err(err) = self.store.extend(id, end) {
-                        log_info(&format!("cannot extend an interval: {err}"));
+                        log_error(&format!("cannot extend an interval: {err}"));
                     }
                 }
                 Effect::Close { id, end } => {
                     if let Err(err) = self.store.close(id, end) {
-                        log_info(&format!("cannot close an interval: {err}"));
+                        log_error(&format!("cannot close an interval: {err}"));
                     }
                 }
                 Effect::MarkPassive { id } => {
                     if let Err(err) = self.store.mark_passive(id) {
-                        log_info(&format!("cannot mark an interval passive: {err}"));
+                        log_error(&format!("cannot mark an interval passive: {err}"));
                     }
                 }
             }

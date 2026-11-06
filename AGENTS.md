@@ -7,7 +7,7 @@ alternatives that were ruled out.
 ## Build and check
 
 ```sh
-cargo test                     # 130 tests, no external services
+cargo test                     # 133 tests, no external services
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 
@@ -57,6 +57,11 @@ rule testable in microseconds. Do not reach for `Utc::now()` inside the tracker.
 after it in `src/tracker.rs`. If you change a rule, change the test and the
 document in the same commit — a rule that exists only in code will be undone by
 the next person who finds it surprising.
+
+**Logging goes through `tracing`.** `info` for what the daemon is doing, `warn`
+for something that went wrong but did not stop it, `error` for an interval that
+was not written. Nothing is logged from a loop that runs per event without a
+reason, and an event that fires routinely is not worth its own line.
 
 **Errors that a user can cause are fatal.** A malformed configuration stops the
 program. A missing one does not. The distinction is whether the user believes they
@@ -111,7 +116,7 @@ Unit tests cover every rule, but three things need a live compositor:
 mkdir -p /tmp/nt-test && printf '[idle]\ntimeout = "5m"\n' > /tmp/nt-test/config.toml
 NIRI_TRACKER_CONFIG_DIR=/tmp/nt-test ./target/debug/niri-tracker daemon
 # Then leave the keyboard alone for five minutes and watch for
-# "niri-tracker: idle: InputIdle" on stderr.
+# "idle: input stopped 5m ago" on stderr.
 ```
 
 ```sh
