@@ -171,11 +171,12 @@ fn details(args: DetailsArgs) -> Result<ExitCode, BoxError> {
     render(response, args.json)
 }
 
-/// Assemble a query, turning the inclusive dates into a range.
+/// Fill in defaults for a query over inclusive local-day bounds.
 ///
-/// `--to` means the whole of that day, which is why it is passed through as a
-/// date rather than as a midnight instant: the daemon compares local days, so a
-/// range is inclusive by construction and an off-by-one is not expressible.
+/// Both `from` and `to` are inclusive dates (not instants); the daemon
+/// compares local days, so a range is inclusive by construction and there
+/// is no off-by-one to express. A single-sided range is allowed: omitted
+/// `to` means "through today", omitted `from` means "the `to` day".
 fn query_args(
     from: Option<chrono::NaiveDate>,
     to: Option<chrono::NaiveDate>,
@@ -186,9 +187,12 @@ fn query_args(
     limit: Option<usize>,
 ) -> QueryArgs {
     let today = Local::now().date_naive();
+    let to = to.unwrap_or(today);
+    let from = from.unwrap_or(to);
+    debug_assert!(from <= to, "from {from} is after to {to}");
     QueryArgs {
-        from: from.unwrap_or(today),
-        to: to.unwrap_or(today),
+        from,
+        to,
         by,
         app,
         title,
