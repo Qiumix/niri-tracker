@@ -115,10 +115,12 @@ was lost*, not at the tick.
 while nothing is focused. The two cases — lock screen for an hour, overview for
 half a second — are told apart by whether focus comes back.
 
-The comparison is on the **resolved** name, not the compositor's `app_id`. For a
-terminal those differ — the interval holds `nvim`, the compositor says `kitty` —
-and comparing the raw value meant the grace never repaired a blink on a terminal,
-so every overview turned an editing session into two rows.
+The comparison is by **window id**, not by name. A name cannot answer "same
+window?": one process may own several windows that resolve to the same program,
+and two stretches under that name are still two stretches.
+
+The compositor's window id does answer it, and niri keeps it stable for as long as
+the window is open.
 
 The same comparison makes a focus event for the window already being timed a
 no-op. niri sends a window list on every window opening or closing anywhere on

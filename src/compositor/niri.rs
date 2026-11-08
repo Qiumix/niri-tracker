@@ -128,6 +128,7 @@ impl Window {
     /// placeholder is used rather than an empty row that looks like a bug.
     fn to_focus(&self) -> Focus {
         Focus {
+            window_id: self.id,
             app_id: self
                 .app_id
                 .clone()
@@ -313,6 +314,19 @@ mod tests {
         raw.app_id = None;
         let _ = interpret(&Event::WindowOpenedOrChanged { window: raw }, &mut known);
         assert_eq!(known[0].to_focus().app_id, "(unknown)");
+    }
+
+    #[test]
+    fn the_window_id_survives_into_the_focus() {
+        // Two windows of one process are told apart by nothing else.
+        let mut known = Vec::new();
+        let _ = interpret(
+            &Event::WindowOpenedOrChanged {
+                window: window(7, "kitty", false),
+            },
+            &mut known,
+        );
+        assert_eq!(known[0].to_focus().window_id, 7);
     }
 
     #[test]

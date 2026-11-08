@@ -7,7 +7,7 @@ alternatives that were ruled out.
 ## Build and check
 
 ```sh
-cargo test                     # 145 tests, no external services
+cargo test                     # 147 tests, no external services
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 
@@ -102,6 +102,11 @@ See `docs/protocol.md`. A new verb is additive and does not bump
 - **The two idle notifications mean opposite things.** `get_idle_notification`
   is inhibited by `zwp_idle_inhibitor_v1`; `get_input_idle_notification` is not.
   Input idle *without* the first one firing is the video case.
+- **A window is identified by its id, never by its name.** One process can own
+  several windows — `kitty --single-instance`, Firefox, anything Electron — and
+  they all report the same pid and often the same app_id. `Focus::window_id` is
+  the only thing that tells them apart; comparing names merges stretches that
+  belong to different windows.
 - **`GlobalList::bind` takes a version range, not a global name.**
 - **The session lock is a `flock`, and its file is never unlinked.** Unlinking it
   would let a second daemon create a fresh file and lock that instead, and both
