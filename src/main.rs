@@ -151,7 +151,7 @@ fn report(args: ReportArgs) -> Result<ExitCode, BoxError> {
         args.title,
         args.exclude_passive,
         args.limit,
-    );
+    )?;
     let response = client()?.query(Verb::Report, Args::Query(query))?;
     render(response, args.json)
 }
@@ -166,7 +166,7 @@ fn details(args: DetailsArgs) -> Result<ExitCode, BoxError> {
         args.title,
         false,
         args.limit,
-    );
+    )?;
     let response = client()?.query(Verb::Details, Args::Query(query))?;
     render(response, args.json)
 }
@@ -185,12 +185,19 @@ fn query_args(
     title: Option<String>,
     exclude_passive: bool,
     limit: Option<usize>,
-) -> QueryArgs {
+) -> Result<QueryArgs, BoxError> {
     let today = Local::now().date_naive();
     let to = to.unwrap_or(today);
     let from = from.unwrap_or(to);
-    debug_assert!(from <= to, "from {from} is after to {to}");
-    QueryArgs {
+
+    // A reversed range is a typing mistake, and one that would otherwise produce an
+    // empty report rather than an error — the user would be told nothing was
+    // recorded, which is a different claim entirely.
+    if from > to {
+        return Err(format!("--from {from} is after --to {to}").into());
+    }
+
+    Ok(QueryArgs {
         from,
         to,
         by,
@@ -198,7 +205,7 @@ fn query_args(
         title,
         exclude_passive,
         limit,
-    }
+    })
 }
 
 /// Map the command line's grouping onto the wire's.
