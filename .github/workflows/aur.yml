@@ -114,10 +114,25 @@ jobs:
           VERSION: ${{ steps.what.outputs.version }}
         run: |
           set -eu
+          # A checksum that could not be fetched must stop the run, not be published
+          # as empty: the PKGBUILD is rejected by makepkg with "sha256sums does not
+          # allow empty values", and by then the empty value is already in AUR. The
+          # release endpoint can answer 504 while it warms up, so this retries for a
+          # minute before giving up — and then gives up loudly.
           checksum() {
-            curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors \
-              "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/niri-tracker-$1-unknown-linux-gnu.tar.gz.sha256" \
-              | awk '{print $1}'
+            local url="https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/niri-tracker-$1-unknown-linux-gnu.tar.gz.sha256"
+            local sum=""
+            for attempt in $(seq 1 20); do
+              sum="$(curl -fsSL --max-time 30 "$url" | awk '{print $1}')" || sum=""
+              if printf '%s' "$sum" | grep -Eq '^[0-9a-f]{64}$'; then
+                printf '%s' "$sum"
+                return 0
+              fi
+              echo "checksum for $1 not available yet (attempt $attempt)" >&2
+              sleep 5
+            done
+            echo "::error::could not read the $1 checksum from $url" >&2
+            return 1
           }
           x86="$(checksum x86_64)"
           arm="$(checksum aarch64)"
