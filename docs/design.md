@@ -182,6 +182,41 @@ When the lookup fails, the terminal's own `app_id` is used. Crediting time to a
 guess would be worse than crediting it to the window that is unmistakably on
 screen.
 
+### One process, several windows
+
+Everything above assumes one window per process. `kitty --single-instance`
+breaks that: four windows report the same pid, and the subtree below it holds
+four foreground jobs with nothing in the tree saying which belongs to which
+window. Deriving the answer fresh each time therefore gave all four windows the
+same program — whichever had the highest pid — which is unrelated to where the
+user was looking.
+
+Two facts fix it, and neither needs anything from the terminal:
+
+- The compositor gives each window an **id**, stable while it is open.
+- A process is identified by its pid **and** its start time, so an answer can be
+  checked later rather than trusted forever.
+
+A window's answer is remembered. While the process that produced it is still
+running the answer is reused, and when that process exits the window is
+re-derived — it is showing something else now. Remembering also makes the
+remaining windows derivable by elimination: a foreground job already credited to
+another window cannot belong to this one, so what is left over is this one's.
+That turns the common case from a guess into a deduction.
+
+If two windows ever claim the same process, one of the two answers was a guess
+made before the other window was known, and nothing can say which — so both are
+dropped and each is re-derived the next time it is focused.
+
+Releasing the memory when the window closes matters because ids are not promised
+to be unique forever; without it a new window could inherit an old answer. A
+reload clears everything, since which applications are split may have changed.
+
+This does not help when one window holds several sessions — kitty tabs, tmux or
+zellij panes. Those are one window from the compositor's point of view, and
+telling them apart needs an adapter for each: kitty's remote control, tmux's
+`display-message`. See the limitations in the README.
+
 ## The daemon answers queries
 
 Reports and `status` go through the daemon's socket rather than reading the SQLite

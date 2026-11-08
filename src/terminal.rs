@@ -55,10 +55,21 @@ pub struct Process {
 /// which the caller treats as "credit the terminal itself".
 #[must_use]
 pub fn foreground_process(root_pid: u32) -> Option<Process> {
+    foreground_process_avoiding(root_pid, &[])
+}
+
+/// The same, skipping processes that are already explained.
+///
+/// When one process owns several windows, the subtree holds one foreground job
+/// per window and nothing in the tree says which belongs to the window asking.
+/// What does say it is elimination: a process already credited to another window
+/// cannot be this window's, so what remains is this one's.
+#[must_use]
+pub fn foreground_process_avoiding(root_pid: u32, claimed: &[(u32, u64)]) -> Option<Process> {
     let foreground = match walk_children(root_pid) {
-        Some(descendants) => pick_foreground(&descendants),
+        Some(descendants) => pick_foreground_avoiding(&descendants, claimed),
         // No `children` files: reconstruct the tree from the parent links instead.
-        None => find_foreground(&read_table(), root_pid),
+        None => find_foreground_avoiding(&read_table(), root_pid, claimed),
     }?;
 
     Some(Process {
@@ -66,6 +77,12 @@ pub fn foreground_process(root_pid: u32) -> Option<Process> {
         pid: foreground.pid,
         started: foreground.started,
     })
+}
+
+/// When `pid` started, if it is running.
+#[must_use]
+pub fn start_time(pid: u32) -> Option<u64> {
+    read_entry(pid).map(|entry| entry.started)
 }
 
 /// Whether the process that answered earlier is still the one running.
@@ -151,10 +168,11 @@ fn read_children(pid: u32) -> Option<Vec<u32>> {
     published.then_some(children)
 }
 
-/// The foreground job out of a set of processes known to be descendants.
-fn pick_foreground(entries: &[ProcEntry]) -> Option<ProcEntry> {
+/// The same, ignoring processes that belong to some other window.
+fn pick_foreground_avoiding(entries: &[ProcEntry], claimed: &[(u32, u64)]) -> Option<ProcEntry> {
     let foreground: Vec<&ProcEntry> = entries
         .iter()
+        .filter(|entry| !claimed.contains(&(entry.pid, entry.started)))
         .filter(|entry| entry.tty_nr != 0)
         .filter(|entry| entry.tpgid >= 0 && entry.pgrp as i32 == entry.tpgid)
         .collect();
@@ -184,7 +202,17 @@ fn pick_foreground(entries: &[ProcEntry]) -> Option<ProcEntry> {
 ///
 /// Kept as its own function because it is the fallback path and because tests can
 /// drive it with a table they build by hand.
+#[cfg(test)]
 fn find_foreground(table: &HashMap<u32, ProcEntry>, root_pid: u32) -> Option<ProcEntry> {
+    find_foreground_avoiding(table, root_pid, &[])
+}
+
+/// The same, ignoring processes that belong to some other window.
+fn find_foreground_avoiding(
+    table: &HashMap<u32, ProcEntry>,
+    root_pid: u32,
+    claimed: &[(u32, u64)],
+) -> Option<ProcEntry> {
     if !table.contains_key(&root_pid) {
         return None;
     }
@@ -193,7 +221,7 @@ fn find_foreground(table: &HashMap<u32, ProcEntry>, root_pid: u32) -> Option<Pro
         .filter(|entry| entry.pid != root_pid && is_descendant(table, entry.pid, root_pid))
         .cloned()
         .collect();
-    pick_foreground(&candidates)
+    pick_foreground_avoiding(&candidates, claimed)
 }
 
 /// Whether `pid` descends from `ancestor`.

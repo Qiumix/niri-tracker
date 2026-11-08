@@ -7,7 +7,7 @@ alternatives that were ruled out.
 ## Build and check
 
 ```sh
-cargo test                     # 149 tests, no external services
+cargo test                     # 154 tests, no external services
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 
@@ -97,6 +97,11 @@ See `docs/protocol.md`. A new verb is additive and does not bump
 - **A pid does not identify a process.** Pids are reused, so a remembered pid can
   belong to something else by the time it is checked. Pair it with `starttime`;
   `terminal::still_running` does.
+- **The tracker remembers what each window was credited to, and the memory is
+  load-bearing.** One process may own several windows, so the process tree cannot
+  say which window is asking; elimination against what other windows claimed is
+  what picks the right one. Do not "simplify" the memory away, and release it with
+  `forget_window` when a window closes.
 - **Idle events arrive one timeout late.** Cut the interval at `now - timeout`,
   never at `now`.
 - **Suspend detection compares two clocks.** `Instant` does not advance while
