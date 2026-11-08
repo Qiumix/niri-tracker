@@ -69,6 +69,12 @@ impl Clock for SystemClock {
 /// A window the compositor says is focused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Focus {
+    /// The compositor's id for this window, stable while it is open.
+    ///
+    /// The only thing that tells two windows of one process apart: an
+    /// application that owns several windows — `kitty --single-instance`,
+    /// Firefox, anything Electron — reports the same pid for all of them.
+    pub window_id: u64,
     /// The application, as the compositor reports it.
     pub app_id: String,
     /// Its window title.
@@ -116,6 +122,12 @@ struct Current {
     id: i64,
     /// What is being recorded.
     live: Live,
+    /// The window this stretch belongs to.
+    ///
+    /// Kept here rather than on `Live` because it is not part of the record: the
+    /// database stores what to report, and a window id means nothing after the
+    /// window is gone.
+    window_id: u64,
 }
 
 /// The tracking state machine.
@@ -265,11 +277,12 @@ impl Tracker {
         let uninterrupted = returning.is_none_or(|since| now - since < grace);
 
         // The same window is still the one being timed, and nothing interrupted it:
-        // there is nothing to record, only a focus to remember.
+        // there is nothing to record, only a focus to remember. Compared by id
+        // rather than by name, because one process may own several windows that
+        // resolve to the same program — and those are different stretches.
         if uninterrupted
             && let Some(current) = &self.current
-            && current.live.app_id == resolved
-            && current.live.title == focus.title
+            && current.window_id == focus.window_id
             && !current.live.passive
         {
             self.focused = Some(focus);
@@ -285,7 +298,7 @@ impl Tracker {
             passive: false,
             start: now,
         };
-        effects.extend(self.open(live));
+        effects.extend(self.open(live, focus.window_id));
         self.focused = Some(focus);
         effects
     }
@@ -349,7 +362,7 @@ impl Tracker {
         // not continue as an active one: close it at the moment input returned and
         // start a fresh interval with the flag clear.
         let mut effects = self.close_at(now);
-        effects.extend(self.open(self.make_live(&focus, now)));
+        effects.extend(self.open(self.make_live(&focus, now), focus.window_id));
         effects
     }
 
@@ -420,7 +433,7 @@ impl Tracker {
                 {
                     let mut live = self.make_live(&focus, wall);
                     live.passive = self.idle;
-                    effects.extend(self.open(live));
+                    effects.extend(self.open(live, focus.window_id));
                 }
                 return effects;
             }
@@ -469,13 +482,17 @@ impl Tracker {
         }
     }
 
-    /// Open an interval for `live`, if not already open.
-    fn open(&mut self, live: Live) -> Vec<Effect> {
+    /// Open an interval for `live` on `window_id`, if not already open.
+    fn open(&mut self, live: Live, window_id: u64) -> Vec<Effect> {
         if self.current.is_some() {
             return Vec::new();
         }
         let effect = Effect::Open(live.clone());
-        self.current = Some(Current { id: 0, live });
+        self.current = Some(Current {
+            id: 0,
+            live,
+            window_id,
+        });
         vec![effect]
     }
 
@@ -568,12 +585,26 @@ mod tests {
         ManualClock::new(Utc.with_ymd_and_hms(2026, 11, 5, 10, 0, 0).unwrap())
     }
 
+    /// The window showing `app_id` with `title`.
+    ///
+    /// The id is derived from the pair, so focusing the same window twice gives the
+    /// same id — which is what a test usually means. A test that needs two windows
+    /// of one application spells the ids out with [`window`].
     fn focus(app_id: &str, title: &str) -> Option<Focus> {
-        Some(Focus {
+        Some(window(&format!("{app_id}/{title}"), app_id, title))
+    }
+
+    /// A specific window, for tests about several windows of one application.
+    fn window(id: &str, app_id: &str, title: &str) -> Focus {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        id.hash(&mut hasher);
+        Focus {
+            window_id: hasher.finish(),
             app_id: app_id.to_owned(),
             title: title.to_owned(),
             pid: None,
-        })
+        }
     }
 
     fn idle_tracker() -> Tracker {
@@ -685,6 +716,32 @@ mod tests {
             other => panic!("expected a close, got {other:?}"),
         }
         assert!(tracker.live().is_none());
+    }
+
+    #[test]
+    fn two_windows_of_one_application_are_two_stretches() {
+        // `kitty --single-instance` gives every window the same pid, so the name
+        // resolves identically; the id is what says these are different stretches.
+        let clock = clock();
+        let mut tracker = idle_tracker();
+        tracker.on_focus(Some(window("a", "kitty", "shell")), &clock);
+        tracker.adopt(1);
+        clock.advance(Duration::from_secs(10));
+
+        let effects = tracker.on_focus(Some(window("b", "kitty", "shell")), &clock);
+
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Close { id: 1, .. })),
+            "moving to another window must end the first stretch: {effects:?}"
+        );
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Open(_))),
+            "and begin a second one: {effects:?}"
+        );
     }
 
     #[test]
@@ -1144,6 +1201,7 @@ mod tests {
         // A pid that cannot exist, so the lookup fails and falls back.
         let effects = tracker.on_focus(
             Some(Focus {
+                window_id: 1,
                 app_id: String::from("kitty"),
                 title: String::from("x"),
                 pid: Some(u32::MAX),
