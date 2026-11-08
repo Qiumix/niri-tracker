@@ -7,7 +7,7 @@ alternatives that were ruled out.
 ## Build and check
 
 ```sh
-cargo test                     # 154 tests, no external services
+cargo test                     # 158 tests, no external services
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 
@@ -102,6 +102,10 @@ See `docs/protocol.md`. A new verb is additive and does not bump
   say which window is asking; elimination against what other windows claimed is
   what picks the right one. Do not "simplify" the memory away, and release it with
   `forget_window` when a window closes.
+- **A window opening is worth resolving before it is focused.** The process it
+  just forked is the newest under its parent, which is the one moment the guess is
+  not a guess. `Watch::Opened` exists for that, and `Tracker::prefetch` records
+  nothing when the process has not appeared yet.
 - **Idle events arrive one timeout late.** Cut the interval at `now - timeout`,
   never at `now`.
 - **Suspend detection compares two clocks.** `Instant` does not advance while

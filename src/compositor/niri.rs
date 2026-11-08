@@ -44,6 +44,15 @@ pub enum Watch {
     /// event must be handled because niri sends focus changes for existing
     /// windows this way when the focused window was already open.
     Windows,
+    /// A window appeared that was not in the list before.
+    ///
+    /// Worth knowing because that moment is the best chance of working out which
+    /// program a window is running: the process it forked is brand new, so it is
+    /// the newest one under its parent rather than one of several. A window that
+    /// was already open when the daemon started never gets this.
+    Opened(Focus),
+    /// A window is gone, so whatever was remembered about it can be released.
+    Closed(u64),
 }
 
 /// Turn one niri event into a change, or nothing.
@@ -64,13 +73,17 @@ pub fn interpret(event: &Event, known: &mut Vec<Window>) -> Option<Watch> {
             let updated = Window::from(window);
             match known.iter_mut().find(|existing| existing.id == updated.id) {
                 Some(existing) => *existing = updated,
-                None => known.push(updated),
+                None => {
+                    let focus = updated.to_focus();
+                    known.push(updated);
+                    return Some(Watch::Opened(focus));
+                }
             }
             Some(Watch::Windows)
         }
         Event::WindowClosed { id } => {
             known.retain(|window| window.id != *id);
-            Some(Watch::Windows)
+            Some(Watch::Closed(*id))
         }
         Event::WindowFocusChanged { id } => {
             let focus = id.and_then(|id| {
@@ -314,6 +327,54 @@ mod tests {
         raw.app_id = None;
         let _ = interpret(&Event::WindowOpenedOrChanged { window: raw }, &mut known);
         assert_eq!(known[0].to_focus().app_id, "(unknown)");
+    }
+
+    #[test]
+    fn a_new_window_is_announced_once() {
+        // The first event for an id is the only chance to resolve it while its
+        // process is the newest one; later events for the same window are just
+        // updates.
+        let mut known = Vec::new();
+        let first = interpret(
+            &Event::WindowOpenedOrChanged {
+                window: window(4, "kitty", false),
+            },
+            &mut known,
+        );
+        let announced = matches!(&first, Some(Watch::Opened(focus)) if focus.window_id == 4);
+        assert!(
+            announced,
+            "a window not seen before is announced: {first:?}"
+        );
+
+        let again = interpret(
+            &Event::WindowOpenedOrChanged {
+                window: window(4, "kitty", true),
+            },
+            &mut known,
+        );
+        assert!(
+            matches!(again, Some(Watch::Windows)),
+            "the same window twice is only an update: {again:?}"
+        );
+    }
+
+    #[test]
+    fn a_closed_window_is_announced_with_its_id() {
+        let mut known = Vec::new();
+        let _ = interpret(
+            &Event::WindowOpenedOrChanged {
+                window: window(9, "kitty", false),
+            },
+            &mut known,
+        );
+
+        let closed = interpret(&Event::WindowClosed { id: 9 }, &mut known);
+        assert!(
+            matches!(closed, Some(Watch::Closed(9))),
+            "the id is what the tracker forgets: {closed:?}"
+        );
+        assert!(known.is_empty(), "and the window is gone from the list");
     }
 
     #[test]
