@@ -5,6 +5,8 @@
 //! corrupting the total. The daemon calls this, so a report and `status` are
 //! always computed from the same rules.
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Datelike as _, Local, Timelike as _};
 
 use crate::config::{AliasConfig, Resolved, Unmatched};
@@ -274,7 +276,10 @@ fn matches_query(piece: &Attributed, query: &QueryArgs) -> bool {
 
 /// Collapse attributed stretches into rows by the requested key.
 fn group(pieces: Vec<Attributed>, query: &QueryArgs) -> Report {
-    let mut totals: Vec<(String, i64)> = Vec::new();
+    // A title can be almost anything, so grouping by it may see thousands of keys:
+    // a linear scan per piece would be quadratic in exactly the report people ask
+    // for when they are looking for something. The order is settled afterwards.
+    let mut totals: HashMap<String, i64> = HashMap::new();
 
     for piece in pieces {
         let key = match query.by {
@@ -295,23 +300,25 @@ fn group(pieces: Vec<Attributed>, query: &QueryArgs) -> Report {
             }
         };
 
-        match totals.iter_mut().find(|(existing, _)| *existing == key) {
-            Some((_, total)) => *total += piece.seconds,
-            None => totals.push((key, piece.seconds)),
-        }
+        *totals.entry(key).or_default() += piece.seconds;
     }
 
-    // Largest first, then alphabetically, so two rows of equal length do not
-    // swap places between runs.
-    totals.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
-
     // The total covers everything counted, before a limit hides rows.
-    let total_seconds = totals.iter().map(|(_, seconds)| seconds).sum();
+    let total_seconds = totals.values().sum();
 
     let mut rows: Vec<Row> = totals
         .into_iter()
         .map(|(name, seconds)| Row { name, seconds })
         .collect();
+
+    // Largest first, then alphabetically, so two rows of equal length do not
+    // swap places between runs.
+    rows.sort_by(|left, right| {
+        right
+            .seconds
+            .cmp(&left.seconds)
+            .then_with(|| left.name.cmp(&right.name))
+    });
 
     if let Some(limit) = query.limit {
         rows.truncate(limit);
