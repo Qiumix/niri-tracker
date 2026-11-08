@@ -213,6 +213,16 @@ impl Tracker {
         }
     }
 
+    /// Abandon the interval that storage refused to create.
+    ///
+    /// Without this the tracker keeps believing an interval is open with no id, and
+    /// every effect that follows addresses a row that does not exist: the stretch
+    /// is lost silently instead of being retried or reported. Dropping it means the
+    /// next focus event starts a fresh interval and tries again.
+    pub fn abandon_open(&mut self) {
+        self.current = None;
+    }
+
     /// Stop recording, closing whatever is open.
     pub fn pause(&mut self, clock: &dyn Clock) -> Vec<Effect> {
         if self.paused {
@@ -1412,6 +1422,33 @@ mod tests {
         assert!(
             !tracker.idle(),
             "nothing is left to report the user coming back"
+        );
+    }
+
+    #[test]
+    fn an_interval_storage_refused_can_be_abandoned() {
+        // Storage may fail to create the row. The tracker has already opened the
+        // interval locally, and without a rollback every later effect would address
+        // a row that does not exist — losing the stretch instead of retrying it.
+        let clock = clock();
+        let mut tracker = idle_tracker();
+        tracker.on_focus(focus("kitty", "shell"), &clock);
+        assert!(tracker.live().is_some());
+
+        tracker.abandon_open();
+
+        assert!(
+            tracker.live().is_none(),
+            "a rejected interval must not stay open"
+        );
+
+        // And a fresh focus opens a new one, which is the retry.
+        let effects = tracker.on_focus(focus("kitty", "shell"), &clock);
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Open(_))),
+            "the next focus starts again: {effects:?}"
         );
     }
 

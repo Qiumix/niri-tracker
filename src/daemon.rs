@@ -541,7 +541,13 @@ impl Daemon {
             match effect {
                 Effect::Open(live) => match self.store.begin(&live) {
                     Ok(id) => self.tracker.adopt(id),
-                    Err(err) => log_error(&format!("cannot record an interval: {err}")),
+                    Err(err) => {
+                        log_error(&format!("cannot record an interval: {err}"));
+                        // The row does not exist, so nothing can extend or close it.
+                        // Dropping the tracker's copy means the next focus event
+                        // starts again instead of addressing an id that is not there.
+                        self.tracker.abandon_open();
+                    }
                 },
                 Effect::Extend { id, end } => {
                     if let Err(err) = self.store.extend(id, end) {
