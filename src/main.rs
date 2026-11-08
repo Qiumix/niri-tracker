@@ -304,9 +304,16 @@ fn pad(text: &str, width: usize) -> String {
 /// The cut is by cells, and it never splits a character from its combining marks:
 /// those are zero cells wide, so they are included with the character before them
 /// rather than being cut away from it.
+///
+/// The result is never wider than `width`, including when that leaves no room for
+/// the ellipsis at all: a caller asking for zero cells gets nothing, rather than a
+/// single character that claims a cell it was not given.
 fn truncate(text: &str, width: usize) -> String {
     if display_width(text) <= width {
         return text.to_owned();
+    }
+    if width == 0 {
+        return String::new();
     }
 
     // One cell is kept for the ellipsis.
@@ -488,7 +495,7 @@ mod tests {
 
     #[test]
     fn truncation_never_exceeds_the_width() {
-        for width in 2..=20 {
+        for width in 0..=20 {
             for text in ["中文中文中文中文", "mixed 中文 text", "abcdefghij"] {
                 let cut = truncate(text, width);
                 assert!(
