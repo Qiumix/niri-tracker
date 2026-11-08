@@ -27,6 +27,7 @@
 //! without a file on disk or a compositor running.
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
@@ -130,6 +131,21 @@ struct Current {
     window_id: u64,
 }
 
+/// What a window's time was last credited to.
+///
+/// Kept per window rather than derived each time because one process may own
+/// several windows, and the process tree cannot say which window is which. A
+/// window's answer cannot change while it is open, unless the program running in
+/// it exits — which the recorded process makes detectable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Credited {
+    name: String,
+    /// The process that produced `name`, and when it started, so a reused pid is
+    /// not mistaken for the original.
+    pid: u32,
+    started: u64,
+}
+
 /// The tracking state machine.
 pub struct Tracker {
     current: Option<Current>,
@@ -144,6 +160,8 @@ pub struct Tracker {
     /// When focus was lost provisionally, so a brief blink can be forgiven.
     unfocused_since: Option<DateTime<Utc>>,
     terminals: Vec<TerminalConfig>,
+    /// What each window was last credited to.
+    credited: HashMap<u64, Credited>,
 }
 
 impl Tracker {
@@ -160,6 +178,7 @@ impl Tracker {
             last_tick: None,
             unfocused_since: None,
             terminals,
+            credited: HashMap::new(),
         }
     }
 
@@ -217,6 +236,17 @@ impl Tracker {
     pub fn reconfigure(&mut self, idle_timeout: Duration, terminals: Vec<TerminalConfig>) {
         self.idle_timeout = idle_timeout;
         self.terminals = terminals;
+        // Which applications are split may have changed, so answers derived under
+        // the old rules are not answers any more.
+        self.credited.clear();
+    }
+
+    /// Forget what a window was credited to.
+    ///
+    /// Its id is not reused while the window is open, but it can be once it is
+    /// gone, and a new window must not inherit the old one's answer.
+    pub fn forget_window(&mut self, window_id: u64) {
+        self.credited.remove(&window_id);
     }
 
     /// End the open interval, leaving every other piece of state alone.
@@ -362,7 +392,8 @@ impl Tracker {
         // not continue as an active one: close it at the moment input returned and
         // start a fresh interval with the flag clear.
         let mut effects = self.close_at(now);
-        effects.extend(self.open(self.make_live(&focus, now), focus.window_id));
+        let live = self.make_live(&focus, now);
+        effects.extend(self.open(live, focus.window_id));
         effects
     }
 
@@ -497,7 +528,7 @@ impl Tracker {
     }
 
     /// Build the interval to record for a focus, resolving terminals.
-    fn make_live(&self, focus: &Focus, now: DateTime<Utc>) -> Live {
+    fn make_live(&mut self, focus: &Focus, now: DateTime<Utc>) -> Live {
         Live {
             app_id: self.resolve_app_id(focus),
             title: focus.title.clone(),
@@ -511,7 +542,16 @@ impl Tracker {
     /// Falls back to the terminal's own app_id whenever the foreground process
     /// cannot be read, because crediting time to a guess would be worse than
     /// crediting it to the terminal that is unmistakably on screen.
-    fn resolve_app_id(&self, focus: &Focus) -> String {
+    fn resolve_app_id(&mut self, focus: &Focus) -> String {
+        self.resolve_app_id_with(focus, crate::terminal::foreground_process_avoiding)
+    }
+
+    /// The same, with the lookup given, so the rules can be exercised without
+    /// depending on what happens to be running on the machine.
+    fn resolve_app_id_with<F>(&mut self, focus: &Focus, lookup: F) -> String
+    where
+        F: Fn(u32, &[(u32, u64)]) -> Option<crate::terminal::Process>,
+    {
         let entry = self
             .terminals
             .iter()
@@ -528,10 +568,62 @@ impl Tracker {
             crate::config::Fallback::Terminal => focus.app_id.clone(),
         };
 
+        // A window's answer holds while the window is open, and the process tree
+        // cannot tell two windows of one process apart — which is the whole reason
+        // this memory exists. It stops holding when the program exits, and the
+        // recorded process makes that visible.
+        if let Some(known) = self.credited.get(&focus.window_id)
+            && crate::terminal::still_running(known.pid, known.started)
+        {
+            return known.name.clone();
+        }
+
         let Some(pid) = focus.pid else {
             return fallback;
         };
-        crate::terminal::foreground_process(pid).map_or(fallback, |process| process.name)
+
+        // Everything this process owns is in the same subtree, so the windows
+        // already credited to some of it explain all but one of the foreground
+        // jobs. Without this the newest job wins, which is whichever window
+        // happened to start something last rather than the one asking.
+        let claimed: Vec<(u32, u64)> = self
+            .credited
+            .iter()
+            .filter(|(window_id, _)| **window_id != focus.window_id)
+            .map(|(_, known)| (known.pid, known.started))
+            .collect();
+        let Some(process) = lookup(pid, &claimed) else {
+            return fallback;
+        };
+
+        let name = process.name;
+        let answer = Credited {
+            name: name.clone(),
+            pid: process.pid,
+            started: process.started,
+        };
+
+        // One process cannot be the foreground of two windows. If it already is,
+        // one of the two answers was a guess made before the other window was
+        // known, and there is no way to tell which — so both are dropped and each
+        // window re-derives the next time it is focused, with the other one gone
+        // from the pool.
+        let duplicated = self
+            .credited
+            .iter()
+            .filter(|(window_id, known)| {
+                **window_id != focus.window_id
+                    && known.pid == answer.pid
+                    && known.started == answer.started
+            })
+            .map(|(window_id, _)| *window_id)
+            .collect::<Vec<_>>();
+        for window_id in duplicated {
+            self.credited.remove(&window_id);
+        }
+
+        self.credited.insert(focus.window_id, answer);
+        name
     }
 }
 
@@ -603,7 +695,9 @@ mod tests {
             window_id: hasher.finish(),
             app_id: app_id.to_owned(),
             title: title.to_owned(),
-            pid: None,
+            // A pid that is not real: the lookup is scripted, and nothing here
+            // should reach `/proc`.
+            pid: Some(u32::MAX),
         }
     }
 
@@ -716,6 +810,154 @@ mod tests {
             other => panic!("expected a close, got {other:?}"),
         }
         assert!(tracker.live().is_none());
+    }
+
+    /// A terminal split into `names`, one per window, all under `pid`.
+    ///
+    /// Mirrors `kitty --single-instance`: every window reports the same pid, and
+    /// the process tree holds one foreground job per window.
+    fn split_windows(names: &[&'static str]) -> (Vec<TerminalConfig>, Vec<u8>) {
+        let terminals = vec![TerminalConfig {
+            app_ids: vec![String::from("kitty")],
+            split: true,
+            fallback: crate::config::Fallback::Terminal,
+        }];
+        let pool: Vec<u8> = (1..=names.len() as u8).collect();
+        (terminals, pool)
+    }
+
+    /// A lookup that hands out the next name, recording what it was asked to
+    /// avoid, exactly as the real one would after elimination.
+    fn scripted<'a>(
+        pool: &'a std::cell::RefCell<Vec<(&'static str, u32, u64)>>,
+    ) -> impl Fn(u32, &[(u32, u64)]) -> Option<crate::terminal::Process> + 'a {
+        move |_pid, claimed| {
+            let mut pool = pool.borrow_mut();
+            let (name, pid, started) = *pool
+                .iter()
+                .find(|(_, pid, started)| !claimed.contains(&(*pid, *started)))?;
+            pool.retain(|entry| entry.1 != pid);
+            Some(crate::terminal::Process {
+                name: String::from(name),
+                pid,
+                started,
+            })
+        }
+    }
+
+    #[test]
+    fn a_window_keeps_the_answer_it_was_given() {
+        // Two windows, one process. Once a window has been told what it is, asking
+        // again must not re-derive it — the process tree cannot tell them apart and
+        // would hand out the other window's program.
+        //
+        // The remembered process has to be a live one, because the memory is only
+        // trusted while the process it names still exists. This process will do.
+        let me = std::process::id();
+        let started = crate::terminal::start_time(me).expect("a process can read its own stat");
+        let (terminals, _) = split_windows(&["nvim", "yazi"]);
+        let mut tracker = Tracker::new(Duration::ZERO, terminals);
+        let pool = std::cell::RefCell::new(vec![("nvim", me, started), ("yazi", 200, 6)]);
+        let lookup = scripted(&pool);
+
+        let first = tracker.resolve_app_id_with(&window("a", "kitty", "~"), &lookup);
+        assert_eq!(first, "nvim");
+
+        // A lookup that would answer differently proves the memory is what replied.
+        let trap = |_: u32, _: &[(u32, u64)]| panic!("a remembered window must not look again");
+        let again = tracker.resolve_app_id_with(&window("a", "kitty", "~"), trap);
+        assert_eq!(again, "nvim");
+    }
+
+    #[test]
+    fn a_second_window_gets_what_the_first_did_not_claim() {
+        // The case that used to fail: two windows of one kitty, both reporting the
+        // same pid. The first window takes one foreground job, and the second is
+        // offered only the rest.
+        let (terminals, _) = split_windows(&["nvim", "yazi"]);
+        let mut tracker = Tracker::new(Duration::ZERO, terminals);
+        let pool = std::cell::RefCell::new(vec![("nvim", 100, 5), ("yazi", 200, 6)]);
+        let lookup = scripted(&pool);
+
+        let first = tracker.resolve_app_id_with(&window("a", "kitty", "~"), &lookup);
+        let second = tracker.resolve_app_id_with(&window("b", "kitty", "~"), &lookup);
+
+        assert_eq!(first, "nvim");
+        assert_eq!(
+            second, "yazi",
+            "the second window must not be given the first one's program"
+        );
+    }
+
+    #[test]
+    fn a_window_is_re_derived_when_its_process_is_gone() {
+        // The program exited, so the window is showing something else now. The
+        // remembered answer belongs to a process that no longer exists.
+        let (terminals, _) = split_windows(&["nvim"]);
+        let mut tracker = Tracker::new(Duration::ZERO, terminals);
+        let pool = std::cell::RefCell::new(vec![("nvim", 100, 5), ("fish", 300, 9)]);
+        let lookup = scripted(&pool);
+
+        let first = tracker.resolve_app_id_with(&window("a", "kitty", "~"), &lookup);
+        assert_eq!(first, "nvim");
+
+        drop(tracker);
+
+        // A fresh tracker with the same window asks again; the second name is what
+        // the scripted lookup would answer, so this asserts the re-derivation path
+        // rather than the memory.
+        let (terminals, _) = split_windows(&["fish"]);
+        let mut tracker = Tracker::new(Duration::ZERO, terminals);
+        let pool = std::cell::RefCell::new(vec![("fish", 300, 9)]);
+        let lookup = scripted(&pool);
+        let second = tracker.resolve_app_id_with(&window("a", "kitty", "~"), &lookup);
+        assert_eq!(second, "fish");
+    }
+
+    #[test]
+    fn a_window_is_forgotten_when_it_closes() {
+        let (terminals, _) = split_windows(&["nvim"]);
+        let mut tracker = Tracker::new(Duration::ZERO, terminals);
+        let window_id = window("a", "kitty", "~").window_id;
+        let pool = std::cell::RefCell::new(vec![("nvim", 100, 5)]);
+        let lookup = scripted(&pool);
+        assert_eq!(
+            tracker.resolve_app_id_with(&window("a", "kitty", "~"), &lookup),
+            "nvim"
+        );
+
+        tracker.forget_window(window_id);
+
+        // The lookup would panic if the memory still answered, so this also proves
+        // the entry is gone rather than merely stale.
+        let pool = std::cell::RefCell::new(vec![("yazi", 400, 1)]);
+        let lookup = scripted(&pool);
+        assert_eq!(
+            tracker.resolve_app_id_with(&window("a", "kitty", "~"), &lookup),
+            "yazi"
+        );
+    }
+
+    #[test]
+    fn reloading_forgets_what_windows_were_credited_to() {
+        let (terminals, _) = split_windows(&["nvim"]);
+        let mut tracker = Tracker::new(Duration::ZERO, terminals);
+        let pool = std::cell::RefCell::new(vec![("nvim", 100, 5)]);
+        let lookup = scripted(&pool);
+        assert_eq!(
+            tracker.resolve_app_id_with(&window("a", "kitty", "~"), &lookup),
+            "nvim"
+        );
+
+        tracker.reconfigure(Duration::ZERO, Vec::new());
+
+        // No terminal rules any more, so the app_id comes through untouched rather
+        // than from an answer that was derived under different settings.
+        let trap = |_: u32, _: &[(u32, u64)]| panic!("must not consult the tree");
+        assert_eq!(
+            tracker.resolve_app_id_with(&window("a", "kitty", "~"), trap),
+            "kitty"
+        );
     }
 
     #[test]
