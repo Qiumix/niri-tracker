@@ -403,6 +403,18 @@ impl Daemon {
                     // even if the focus event was not sent, so re-derive it.
                     self.refresh_focus();
                 }
+                Watch::Opened(focus) => {
+                    // A new window: work out what it is running now, while the
+                    // process it started is the newest one under its parent. Doing
+                    // it here rather than on first focus is what makes several
+                    // windows of one process distinguishable at all.
+                    self.tracker.prefetch(&focus);
+                    self.refresh_focus();
+                }
+                Watch::Closed(id) => {
+                    self.tracker.forget_window(id);
+                    self.refresh_focus();
+                }
             }
         }
     }

@@ -212,6 +212,20 @@ Releasing the memory when the window closes matters because ids are not promised
 to be unique forever; without it a new window could inherit an old answer. A
 reload clears everything, since which applications are split may have changed.
 
+The first focus after the daemon starts is the hard case: several windows are
+already open, nothing is remembered, and the process tree holds one job per
+window. The answer there is a deduction from what the other windows have claimed,
+which needs them to have been claimed first — so a window that has never been
+focused may still be guessed once.
+
+Windows that open while the daemon runs avoid even that. A window that just
+appeared has just forked its process, which makes it the newest one below the
+terminal and the only candidate once the others are excluded, so the resolution
+is done when the compositor announces the window rather than on its first focus.
+If the process is not there yet — the compositor announces a window before the
+application finishes starting — nothing is recorded, because a guess made at that
+moment would be remembered as fact.
+
 This does not help when one window holds several sessions — kitty tabs, tmux or
 zellij panes. Those are one window from the compositor's point of view, and
 telling them apart needs an adapter for each: kitty's remote control, tmux's

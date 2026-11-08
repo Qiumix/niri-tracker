@@ -241,6 +241,51 @@ impl Tracker {
         self.credited.clear();
     }
 
+    /// Work out what a window is running before it is ever focused.
+    ///
+    /// A window that has just opened has just forked its process, so that process
+    /// is the newest one under the terminal rather than one of several. Resolving
+    /// here rather than on first focus is the difference between deducing which
+    /// program a window runs and guessing it.
+    ///
+    /// Returns nothing and records nothing when the window's process does not
+    /// exist yet — the compositor announces a window before the application
+    /// finishes starting, and a guess made then would be remembered as fact.
+    pub fn prefetch(&mut self, focus: &Focus) {
+        let splits = self
+            .terminals
+            .iter()
+            .any(|entry| entry.split && entry.app_ids.iter().any(|id| id == &focus.app_id));
+        if !splits {
+            return;
+        }
+
+        if self.credited.contains_key(&focus.window_id) {
+            return;
+        }
+        let Some(pid) = focus.pid else {
+            return;
+        };
+
+        let claimed: Vec<(u32, u64)> = self
+            .credited
+            .values()
+            .map(|known| (known.pid, known.started))
+            .collect();
+        let Some(process) = crate::terminal::foreground_process_avoiding(pid, &claimed) else {
+            return;
+        };
+
+        self.credited.insert(
+            focus.window_id,
+            Credited {
+                name: process.name,
+                pid: process.pid,
+                started: process.started,
+            },
+        );
+    }
+
     /// Forget what a window was credited to.
     ///
     /// Its id is not reused while the window is open, but it can be once it is
@@ -843,6 +888,48 @@ mod tests {
                 started,
             })
         }
+    }
+
+    #[test]
+    fn prefetching_is_a_no_op_for_an_application_that_is_not_split() {
+        // The daemon prefetches every window that opens, including ones this
+        // feature has nothing to say about. Those must not be looked up: the whole
+        // point of the terminal rule is that it applies to terminals.
+        let (terminals, _) = split_windows(&["nvim"]);
+        let mut tracker = Tracker::new(Duration::ZERO, terminals);
+
+        tracker.prefetch(&window("a", "floorp", "browser"));
+
+        // Nothing was remembered, so the answer is the app_id itself.
+        assert_eq!(
+            tracker.resolve_app_id_with(&window("a", "floorp", "browser"), |_, _| None),
+            "floorp"
+        );
+    }
+
+    #[test]
+    fn prefetching_does_not_invent_an_answer_when_nothing_is_there() {
+        // The compositor announces a window before the application has finished
+        // starting, so there may be no process to find yet. Nothing must be
+        // recorded then, or a guess would be remembered as fact.
+        let (terminals, _) = split_windows(&["nvim"]);
+        let mut tracker = Tracker::new(Duration::ZERO, terminals);
+
+        // A pid that is not real has no subtree, so prefetch finds nothing.
+        tracker.prefetch(&Focus {
+            window_id: 99,
+            app_id: String::from("kitty"),
+            title: String::from("~"),
+            pid: Some(u32::MAX),
+        });
+
+        // The next focus looks again rather than trusting a fabricated answer.
+        let pool = std::cell::RefCell::new(vec![("nvim", 100, 5)]);
+        let lookup = scripted(&pool);
+        assert_eq!(
+            tracker.resolve_app_id_with(&window("x", "kitty", "~"), &lookup),
+            "nvim"
+        );
     }
 
     #[test]
