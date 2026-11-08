@@ -425,7 +425,7 @@ dependencies = [
 
 [[package]]
 name = "niri-tracker"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "calloop",
  "calloop-wayland-source",

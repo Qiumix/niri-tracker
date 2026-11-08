@@ -9,7 +9,7 @@ license     = "MIT"
 name        = "niri-tracker"
 readme      = "README.md"
 repository  = "https://github.com/Qiumix/niri-tracker"
-version     = "0.1.4"
+version     = "0.1.5"
 
 # Everything a `cargo install` cannot use is left out of the crate, which keeps
 # it to the code and the documents a reader of the source would want.
