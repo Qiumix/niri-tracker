@@ -165,6 +165,11 @@ When the foreground process cannot be read — a permission problem, a race with
 the process exiting — the time is credited to the terminal itself, because a
 guess would be worse than the window that is unmistakably on screen.
 
+An application that puts several windows under one process — `kitty
+--single-instance`, or anything else that reuses one process for every window —
+still works, because each window is remembered separately and a process already
+credited to one window is not offered to another.
+
 ### Aliases
 
 Merge several applications into one name. Applied when a report is generated,
@@ -234,6 +239,24 @@ SELECT app_id, SUM(end - start) FROM session GROUP BY app_id ORDER BY 2 DESC;
 | Machine suspends | The interval ends where the sleep began; a new one begins on waking, unless paused or idle — idle reopens only with an inhibitor, as passive |
 | Daemon killed | The next start closes the dangling interval at its last checkpoint |
 | `pause` | Nothing recorded; not persisted, so a restart resumes recording |
+
+### What is not told apart
+
+Some setups put several programs under **one window**, where nothing in the
+compositor's window list distinguishes them:
+
+| Setup | What gets recorded |
+|---|---|
+| kitty (or any terminal) with several **tabs** | whichever tab's program the process tree surfaces first, then that answer is kept for the window |
+| tmux panes | `tmux` itself — its server detaches from the terminal's process tree, so the panes are not below it at all |
+| zellij, screen, similar multiplexers | as tmux, depending on whether the server detaches |
+
+Telling these apart needs an adapter per application — kitty's remote control,
+`tmux display-message`, and so on — each with its own requirements and its own
+way of going wrong. This project does not have them.
+
+If one of these matters to you, a pull request adding it is welcome; it would be
+opt-in and documented as an adapter rather than assumed.
 
 A note on that last row: pausing is deliberately not remembered. A daemon that
 stays paused after a restart is the hardest kind of failure to notice — days
