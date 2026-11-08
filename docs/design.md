@@ -287,6 +287,13 @@ A tracker that stays paused after a restart fails in the hardest way to notice:
 the reports are simply short, and nothing says why. Pausing is a momentary action
 and should not survive the process that it was asked of.
 
+The same reasoning applies to "the user is away", which is a fact about idle
+*detection* rather than about the user. A reload that turns detection off, or a
+connection to it that cannot be re-established, leaves nothing that could report
+the user coming back — so the flag goes too. The error is then in the harmless
+direction: time that may have been idle gets counted, where the alternative is a
+tracker that never counts again.
+
 ## One daemon per session, decided by a lock
 
 Two daemons recording the same session would count every second twice, and

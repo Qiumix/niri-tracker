@@ -337,8 +337,11 @@ impl Daemon {
             }
             Err(err) => {
                 // Not fatal: recording continues, it just cannot tell a watched
-                // video from an empty room.
+                // video from an empty room. The tracker is told the same thing, so
+                // it stops believing the user is away — nothing is left to report
+                // that they came back.
                 log_warn(&format!("idle detection unavailable: {err}"));
+                self.tracker.forget_idle();
             }
         }
     }

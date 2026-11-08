@@ -239,6 +239,15 @@ impl Tracker {
         // Which applications are split may have changed, so answers derived under
         // the old rules are not answers any more.
         self.credited.clear();
+
+        // Being away is a fact about idle *detection*, not about the user. Turning
+        // detection off, or losing the connection to it, leaves nothing that could
+        // report the user coming back: the flag would stay set forever and the
+        // tracker would never count again. Forgetting it is the safe direction —
+        // it counts time that may have been idle, which a report can survive.
+        if idle_timeout.is_zero() {
+            self.idle = false;
+        }
     }
 
     /// Work out what a window is running before it is ever focused.
@@ -284,6 +293,15 @@ impl Tracker {
                 started: process.started,
             },
         );
+    }
+
+    /// Stop believing the user is away.
+    ///
+    /// Called when idle detection is gone: the state can only be cleared by an
+    /// event from the thing that no longer exists, so keeping it would stop the
+    /// tracker counting for the rest of the session.
+    pub fn forget_idle(&mut self) {
+        self.idle = false;
     }
 
     /// Forget what a window was credited to.
@@ -1307,6 +1325,59 @@ mod tests {
         // A focus event while paused must not open anything.
         let effects = tracker.on_focus(focus("firefox", "mail"), &clock);
         assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn disabling_idle_detection_forgets_that_the_user_is_away() {
+        // Turning detection off leaves nothing that could ever report the user
+        // coming back, so the flag has to go with it.
+        let clock = clock();
+        let mut tracker = idle_tracker();
+        tracker.on_focus(focus("kitty", "shell"), &clock);
+        tracker.adopt(1);
+        tracker.on_input_idle(clock.wall(), &clock);
+        assert!(tracker.idle());
+
+        tracker.reconfigure(Duration::ZERO, Vec::new());
+
+        assert!(
+            !tracker.idle(),
+            "a tracker with no idle detection cannot know the user is away"
+        );
+    }
+
+    #[test]
+    fn keeping_idle_detection_keeps_the_user_away() {
+        // The other direction still holds: a reload that keeps detection running
+        // must not count the time until the user comes back.
+        let clock = clock();
+        let mut tracker = idle_tracker();
+        tracker.on_focus(focus("kitty", "shell"), &clock);
+        tracker.adopt(1);
+        tracker.on_input_idle(clock.wall(), &clock);
+
+        tracker.reconfigure(Duration::from_secs(600), Vec::new());
+
+        assert!(
+            tracker.idle(),
+            "detection is still running, so the user is away"
+        );
+    }
+
+    #[test]
+    fn losing_idle_detection_forgets_that_the_user_is_away() {
+        let clock = clock();
+        let mut tracker = idle_tracker();
+        tracker.on_focus(focus("kitty", "shell"), &clock);
+        tracker.adopt(1);
+        tracker.on_input_idle(clock.wall(), &clock);
+
+        tracker.forget_idle();
+
+        assert!(
+            !tracker.idle(),
+            "nothing is left to report the user coming back"
+        );
     }
 
     #[test]
