@@ -531,7 +531,7 @@ impl Tracker {
         let Some(pid) = focus.pid else {
             return fallback;
         };
-        crate::terminal::foreground_process_name(pid).unwrap_or(fallback)
+        crate::terminal::foreground_process(pid).map_or(fallback, |process| process.name)
     }
 }
 

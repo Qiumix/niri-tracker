@@ -23,13 +23,29 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
 /// What `/proc` says about one process.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ProcEntry {
     pid: u32,
     ppid: u32,
     pgrp: u32,
     tpgid: i32,
     tty_nr: i64,
+    /// When the process started, in clock ticks since boot.
+    ///
+    /// Together with the pid this identifies a process: pids are reused, and a
+    /// recycled pid would otherwise make a stale answer look current.
+    started: u64,
+}
+
+/// A process, as something that can be identified again later.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Process {
+    /// The basename of its `argv[0]`.
+    pub name: String,
+    /// Its pid, which may be reused once it exits.
+    pub pid: u32,
+    /// When it started, which tells a reused pid from the original.
+    pub started: u64,
 }
 
 /// Find the foreground process name for a terminal window.
@@ -38,13 +54,27 @@ struct ProcEntry {
 /// foreground process's `argv[0]`, or `None` when nothing conclusive is found,
 /// which the caller treats as "credit the terminal itself".
 #[must_use]
-pub fn foreground_process_name(root_pid: u32) -> Option<String> {
+pub fn foreground_process(root_pid: u32) -> Option<Process> {
     let foreground = match walk_children(root_pid) {
         Some(descendants) => pick_foreground(&descendants),
         // No `children` files: reconstruct the tree from the parent links instead.
         None => find_foreground(&read_table(), root_pid),
-    };
-    foreground.and_then(process_name)
+    }?;
+
+    Some(Process {
+        name: process_name(foreground.pid)?,
+        pid: foreground.pid,
+        started: foreground.started,
+    })
+}
+
+/// Whether the process that answered earlier is still the one running.
+///
+/// A pid on its own is not enough: the process may have exited and a new one
+/// taken its number, which would make an old answer look current.
+#[must_use]
+pub fn still_running(pid: u32, started: u64) -> bool {
+    read_entry(pid).is_some_and(|entry| entry.started == started)
 }
 
 /// Upper bound on how many processes a subtree walk will visit.
@@ -121,8 +151,8 @@ fn read_children(pid: u32) -> Option<Vec<u32>> {
     published.then_some(children)
 }
 
-/// The pid of the foreground job out of a set of processes known to be descendants.
-fn pick_foreground(entries: &[ProcEntry]) -> Option<u32> {
+/// The foreground job out of a set of processes known to be descendants.
+fn pick_foreground(entries: &[ProcEntry]) -> Option<ProcEntry> {
     let foreground: Vec<&ProcEntry> = entries
         .iter()
         .filter(|entry| entry.tty_nr != 0)
@@ -137,22 +167,24 @@ fn pick_foreground(entries: &[ProcEntry]) -> Option<u32> {
     let newest_leader = foreground
         .iter()
         .filter(|entry| entry.pid == entry.pgrp)
-        .map(|entry| entry.pid)
-        .max();
+        .max_by_key(|entry| entry.pid);
     if newest_leader.is_some() {
-        return newest_leader;
+        return newest_leader.copied().copied();
     }
 
     // No leader is visible, which happens when it exited while its children carry
     // on. Fall back to the newest process in the group.
-    foreground.iter().map(|entry| entry.pid).max()
+    foreground
+        .into_iter()
+        .max_by_key(|entry| entry.pid)
+        .copied()
 }
 
 /// The pid of the foreground job, found by scanning the whole process table.
 ///
 /// Kept as its own function because it is the fallback path and because tests can
 /// drive it with a table they build by hand.
-fn find_foreground(table: &HashMap<u32, ProcEntry>, root_pid: u32) -> Option<u32> {
+fn find_foreground(table: &HashMap<u32, ProcEntry>, root_pid: u32) -> Option<ProcEntry> {
     if !table.contains_key(&root_pid) {
         return None;
     }
@@ -244,13 +276,17 @@ fn read_entry(pid: u32) -> Option<ProcEntry> {
 
     let mut fields = rest.split_whitespace();
     // After the comm, the next fields are state, ppid, pgrp, session, tty_nr,
-    // tpgid.
+    // tpgid, ... and starttime is the twenty-second overall, which is the
+    // seventeenth here.
     let _state = fields.next()?;
     let ppid = fields.next()?.parse::<u32>().ok()?;
     let pgrp = fields.next()?.parse::<u32>().ok()?;
     let _session = fields.next()?;
     let tty_nr = fields.next()?.parse::<i64>().ok()?;
     let tpgid = fields.next()?.parse::<i32>().ok()?;
+    // The ten fields between tpgid and starttime are flags, faults, priority and
+    // time; none of them are wanted, but the count is what matters.
+    let started = fields.nth(10)?.parse::<u64>().ok()?;
 
     Some(ProcEntry {
         pid,
@@ -258,6 +294,7 @@ fn read_entry(pid: u32) -> Option<ProcEntry> {
         pgrp,
         tpgid,
         tty_nr,
+        started,
     })
 }
 
@@ -272,6 +309,9 @@ mod tests {
             pgrp,
             tpgid,
             tty_nr,
+            // Distinct per pid, which is what a real table looks like and what
+            // makes the identity check meaningful.
+            started: u64::from(pid) * 10,
         }
     }
 
@@ -342,6 +382,28 @@ mod tests {
     }
 
     #[test]
+    fn a_process_can_be_identified_again_later() {
+        // The daemon remembers which process answered for a window, and has to
+        // notice when that process has been replaced.
+        let me = std::process::id();
+        let entry = read_entry(me).expect("a process can read its own stat");
+        assert!(
+            still_running(me, entry.started),
+            "a live process with its own start time is still running"
+        );
+        assert!(
+            !still_running(me, entry.started.wrapping_add(1)),
+            "a different start time is a different process"
+        );
+    }
+
+    #[test]
+    fn a_process_that_is_gone_is_not_running() {
+        // u32::MAX is not a pid, so nothing is there to answer.
+        assert!(!still_running(u32::MAX, 0));
+    }
+
+    #[test]
     fn the_foreground_job_is_found() {
         // kitty(100) -> fish(101), and fish's own child nvim(102) owns the pty.
         let table = table(vec![
@@ -349,7 +411,10 @@ mod tests {
             entry(101, 100, 101, 102, 7),
             entry(102, 101, 102, 102, 7),
         ]);
-        assert_eq!(find_foreground(&table, 100), Some(102));
+        assert_eq!(
+            find_foreground(&table, 100).map(|entry| entry.pid),
+            Some(102)
+        );
     }
 
     #[test]
@@ -358,7 +423,10 @@ mod tests {
             entry(100, 1, 100, -1, 0),
             entry(101, 100, 101, 101, 7),
         ]);
-        assert_eq!(find_foreground(&table, 100), Some(101));
+        assert_eq!(
+            find_foreground(&table, 100).map(|entry| entry.pid),
+            Some(101)
+        );
     }
 
     #[test]
@@ -367,20 +435,20 @@ mod tests {
             entry(100, 1, 100, -1, 0),
             entry(101, 100, 101, 101, 0),
         ]);
-        assert_eq!(find_foreground(&table, 100), None);
+        assert_eq!(find_foreground(&table, 100).map(|entry| entry.pid), None);
     }
 
     #[test]
     fn an_unrelated_foreground_job_is_not_claimed() {
         // 500 is a background job of a different terminal.
         let table = table(vec![entry(100, 1, 100, -1, 0), entry(500, 1, 500, 500, 9)]);
-        assert_eq!(find_foreground(&table, 100), None);
+        assert_eq!(find_foreground(&table, 100).map(|entry| entry.pid), None);
     }
 
     #[test]
     fn the_terminal_itself_is_never_the_answer() {
         let table = table(vec![entry(100, 1, 100, 100, 7)]);
-        assert_eq!(find_foreground(&table, 100), None);
+        assert_eq!(find_foreground(&table, 100).map(|entry| entry.pid), None);
     }
 
     #[test]
@@ -391,7 +459,10 @@ mod tests {
             entry(101, 100, 101, 101, 7),
             entry(201, 100, 201, 201, 8),
         ]);
-        assert_eq!(find_foreground(&table, 100), Some(201));
+        assert_eq!(
+            find_foreground(&table, 100).map(|entry| entry.pid),
+            Some(201)
+        );
     }
 
     #[test]
@@ -404,7 +475,10 @@ mod tests {
             entry(102, 101, 102, 102, 7),
             entry(110, 102, 102, 102, 7),
         ]);
-        assert_eq!(find_foreground(&table, 100), Some(102));
+        assert_eq!(
+            find_foreground(&table, 100).map(|entry| entry.pid),
+            Some(102)
+        );
     }
 
     #[test]
@@ -415,7 +489,10 @@ mod tests {
             entry(110, 100, 999, 999, 7),
             entry(120, 100, 999, 999, 7),
         ]);
-        assert_eq!(find_foreground(&table, 100), Some(120));
+        assert_eq!(
+            find_foreground(&table, 100).map(|entry| entry.pid),
+            Some(120)
+        );
     }
 
     #[test]
@@ -426,13 +503,16 @@ mod tests {
             entry(102, 101, 102, 104, 7),
             entry(104, 102, 104, 104, 7),
         ]);
-        assert_eq!(find_foreground(&table, 100), Some(104));
+        assert_eq!(
+            find_foreground(&table, 100).map(|entry| entry.pid),
+            Some(104)
+        );
     }
 
     #[test]
     fn a_missing_root_yields_nothing() {
         let table = table(vec![entry(101, 100, 101, 101, 7)]);
-        assert_eq!(find_foreground(&table, 100), None);
+        assert_eq!(find_foreground(&table, 100).map(|entry| entry.pid), None);
     }
 
     #[test]
@@ -442,6 +522,6 @@ mod tests {
             entry(101, 102, 101, 101, 7),
             entry(102, 101, 101, 101, 7),
         ]);
-        assert_eq!(find_foreground(&table, 100), None);
+        assert_eq!(find_foreground(&table, 100).map(|entry| entry.pid), None);
     }
 }
