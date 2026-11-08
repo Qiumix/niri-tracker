@@ -7,7 +7,7 @@ alternatives that were ruled out.
 ## Build and check
 
 ```sh
-cargo test                     # 160 tests, no external services
+cargo test                     # 163 tests, no external services
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 
@@ -108,6 +108,10 @@ See `docs/protocol.md`. A new verb is additive and does not bump
   just forked is the newest under its parent, which is the one moment the guess is
   not a guess. `Watch::Opened` exists for that, and `Tracker::prefetch` records
   nothing when the process has not appeared yet.
+- **`idle` is only meaningful while idle detection exists.** It is cleared by an
+  event, so losing detection — a reload to `timeout = 0`, or a Wayland connection
+  that cannot be re-established — would leave it set forever and stop the tracker
+  counting. `forget_idle` exists for that.
 - **Idle events arrive one timeout late.** Cut the interval at `now - timeout`,
   never at `now`.
 - **Suspend detection compares two clocks.** `Instant` does not advance while
