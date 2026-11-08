@@ -303,18 +303,20 @@ fn read_entry(pid: u32) -> Option<ProcEntry> {
     let rest = text.get(close + 1..)?;
 
     let mut fields = rest.split_whitespace();
-    // After the comm, the next fields are state, ppid, pgrp, session, tty_nr,
-    // tpgid, ... and starttime is the twenty-second overall, which is the
-    // seventeenth here.
+    // After the comm: state, ppid, pgrp, session, tty_nr, tpgid, then the counters
+    // and scheduling fields, with starttime twentieth. The thirteen between tpgid
+    // and starttime are flags, page faults, cpu time and priority — none wanted,
+    // and the count is the only thing about them that matters:
+    //
+    //   flags minflt cminflt majflt cmajflt utime stime cutime cstime
+    //   priority nice num_threads itrealvalue
     let _state = fields.next()?;
     let ppid = fields.next()?.parse::<u32>().ok()?;
     let pgrp = fields.next()?.parse::<u32>().ok()?;
     let _session = fields.next()?;
     let tty_nr = fields.next()?.parse::<i64>().ok()?;
     let tpgid = fields.next()?.parse::<i32>().ok()?;
-    // The ten fields between tpgid and starttime are flags, faults, priority and
-    // time; none of them are wanted, but the count is what matters.
-    let started = fields.nth(10)?.parse::<u64>().ok()?;
+    let started = fields.nth(13)?.parse::<u64>().ok()?;
 
     Some(ProcEntry {
         pid,
@@ -410,6 +412,42 @@ mod tests {
     }
 
     #[test]
+    fn the_start_time_is_the_one_the_kernel_reports() {
+        // `starttime` is field 22 overall, so it is the twentieth after the closing
+        // parenthesis. Reading the wrong one silently makes the identity check
+        // compare `nice`, which is zero for almost everything and would make every
+        // remembered answer look current forever.
+        let me = std::process::id();
+        let started = start_time(me).expect("a process can read its own stat");
+
+        // The kernel reports it in clock ticks since boot, so dividing by the tick
+        // rate gives something close to the uptime — not any other small number.
+        assert!(
+            started > 0,
+            "a running process started after boot, so its start time is positive"
+        );
+
+        // The other fields in the neighbourhood are small; start time grows with
+        // uptime. On any machine that has been up for more than a second this is
+        // far above the priority and thread-count values nearby.
+        let uptime_ticks = std::fs::read_to_string("/proc/uptime")
+            .ok()
+            .and_then(|text| text.split_whitespace().next()?.parse::<f64>().ok())
+            .map(|seconds| seconds * 100.0);
+        if let Some(uptime_ticks) = uptime_ticks {
+            assert!(
+                u64_to_f64(started) > uptime_ticks / 2.0,
+                "start time {started} should be near the uptime in ticks {uptime_ticks:.0}"
+            );
+        }
+    }
+
+    /// For the comparison above, where precision does not matter.
+    fn u64_to_f64(value: u64) -> f64 {
+        value.to_string().parse().unwrap_or(f64::MAX)
+    }
+
+    #[test]
     fn a_process_can_be_identified_again_later() {
         // The daemon remembers which process answered for a window, and has to
         // notice when that process has been replaced.
@@ -422,6 +460,24 @@ mod tests {
         assert!(
             !still_running(me, entry.started.wrapping_add(1)),
             "a different start time is a different process"
+        );
+    }
+
+    #[test]
+    fn a_reused_pid_does_not_look_like_the_original() {
+        // The whole point of keeping the start time: a pid that has been recycled
+        // belongs to a different process, and the remembered answer must expire.
+        let me = std::process::id();
+        let started = start_time(me).expect("a process can read its own stat");
+
+        // Same pid, different start time: this is what a reused pid looks like.
+        assert!(
+            !still_running(me, started.saturating_sub(1)),
+            "an earlier start time is a different process"
+        );
+        assert!(
+            !still_running(me, started.saturating_add(1)),
+            "a later start time is a different process"
         );
     }
 

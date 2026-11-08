@@ -7,7 +7,7 @@ alternatives that were ruled out.
 ## Build and check
 
 ```sh
-cargo test                     # 158 tests, no external services
+cargo test                     # 160 tests, no external services
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 
@@ -93,7 +93,9 @@ See `docs/protocol.md`. A new verb is additive and does not bump
 - **`/proc/<pid>/stat`** — `comm` may contain spaces and `)`, so fields are
   counted from the *last* `)`. `tpgid` and `pgrp` are the terminal's foreground
   process group; `tty_nr != 0` means it has a terminal at all. `starttime` is the
-  twenty-second field overall, seventeen after the closing parenthesis.
+  twenty-second field overall, so it is the twentieth after the closing
+  parenthesis — the thirteen between `tpgid` and it are flags, page faults, cpu
+  time and scheduling.
 - **A pid does not identify a process.** Pids are reused, so a remembered pid can
   belong to something else by the time it is checked. Pair it with `starttime`;
   `terminal::still_running` does.
