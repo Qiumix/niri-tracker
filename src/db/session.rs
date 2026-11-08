@@ -90,15 +90,19 @@ impl Live {
 /// the exclusive upper bound a range query wants.
 #[must_use]
 pub fn local_midnight(date: NaiveDate) -> DateTime<Utc> {
+    // Midnight is a valid time on every date, so this cannot be `None`; the
+    // expectation says so rather than substituting an unrelated instant.
+    let midnight = date
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight exists on every date");
+
     // A local day can have no midnight when a timezone skips it, which
     // `LocalResult::None` reports. Falling back to the UTC interpretation keeps
     // the boundary sane instead of panicking on a holiday.
-    match Local.from_local_datetime(&date.and_hms_opt(0, 0, 0).unwrap_or_default()) {
+    match Local.from_local_datetime(&midnight) {
         chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc),
         chrono::LocalResult::Ambiguous(first, _) => first.with_timezone(&Utc),
-        chrono::LocalResult::None => {
-            Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0).unwrap_or_default())
-        }
+        chrono::LocalResult::None => Utc.from_utc_datetime(&midnight),
     }
 }
 

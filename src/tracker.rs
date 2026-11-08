@@ -355,6 +355,14 @@ impl Tracker {
 
         let returning = self.unfocused_since.take();
 
+        // Nothing is counted while away, so a pending focus loss has no interval
+        // left to settle. Clearing it here keeps the state honest; leaving it set
+        // would be dropped by the next focus anyway, which hides the fact that it
+        // outlived its meaning.
+        if self.idle {
+            self.unfocused_since = None;
+        }
+
         if self.paused || self.idle {
             // Remember where to start when the reason to wait goes away.
             self.focused = Some(focus);
@@ -996,27 +1004,54 @@ mod tests {
 
     #[test]
     fn a_window_is_re_derived_when_its_process_is_gone() {
-        // The program exited, so the window is showing something else now. The
-        // remembered answer belongs to a process that no longer exists.
+        // A remembered answer is only good while the process behind it is alive.
+        // When that process exits the window is showing something else, and the
+        // memory has to notice — otherwise a terminal that went from nvim back to a
+        // shell would report nvim until it was closed.
         let (terminals, _) = split_windows(&["nvim"]);
         let mut tracker = Tracker::new(Duration::ZERO, terminals);
-        let pool = std::cell::RefCell::new(vec![("nvim", 100, 5), ("fish", 300, 9)]);
-        let lookup = scripted(&pool);
+        let target = window("a", "kitty", "~");
 
-        let first = tracker.resolve_app_id_with(&window("a", "kitty", "~"), &lookup);
-        assert_eq!(first, "nvim");
+        // A process that cannot exist, remembered as if it had answered before.
+        tracker.credited.insert(
+            target.window_id,
+            Credited {
+                name: String::from("nvim"),
+                pid: u32::MAX,
+                started: 0,
+            },
+        );
 
-        drop(tracker);
-
-        // A fresh tracker with the same window asks again; the second name is what
-        // the scripted lookup would answer, so this asserts the re-derivation path
-        // rather than the memory.
-        let (terminals, _) = split_windows(&["fish"]);
-        let mut tracker = Tracker::new(Duration::ZERO, terminals);
+        // If the memory were trusted, this would answer "nvim" without looking.
         let pool = std::cell::RefCell::new(vec![("fish", 300, 9)]);
         let lookup = scripted(&pool);
-        let second = tracker.resolve_app_id_with(&window("a", "kitty", "~"), &lookup);
-        assert_eq!(second, "fish");
+        assert_eq!(
+            tracker.resolve_app_id_with(&target, &lookup),
+            "fish",
+            "a dead process's answer must be replaced by a fresh lookup"
+        );
+    }
+
+    #[test]
+    fn a_remembered_answer_is_reused_while_its_process_lives() {
+        // The other half of the rule, so the test above cannot pass by never
+        // consulting the memory at all.
+        let me = std::process::id();
+        let started = crate::terminal::start_time(me).expect("a process can read its own stat");
+        let (terminals, _) = split_windows(&["nvim"]);
+        let mut tracker = Tracker::new(Duration::ZERO, terminals);
+        let target = window("a", "kitty", "~");
+        tracker.credited.insert(
+            target.window_id,
+            Credited {
+                name: String::from("nvim"),
+                pid: me,
+                started,
+            },
+        );
+
+        let trap = |_: u32, _: &[(u32, u64)]| panic!("a live answer must not be looked up again");
+        assert_eq!(tracker.resolve_app_id_with(&target, trap), "nvim");
     }
 
     #[test]
