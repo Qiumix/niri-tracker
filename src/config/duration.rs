@@ -100,8 +100,8 @@ pub fn format(duration: Duration) -> String {
         return String::from("0s");
     }
 
-    let days = total / 86_400;
-    let hours = total % 86_400 / 3_600;
+    let days = total / 24 / 3600;
+    let hours = (total / 3600) % 24;
     let minutes = total % 3_600 / 60;
     let seconds = total % 60;
 
