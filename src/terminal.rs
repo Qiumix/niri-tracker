@@ -94,6 +94,26 @@ pub fn still_running(pid: u32, started: u64) -> bool {
     read_entry(pid).is_some_and(|entry| entry.started == started)
 }
 
+/// Whether the process that answered earlier is the one the terminal is showing.
+///
+/// A process staying alive is not enough for a remembered answer to hold. In a
+/// terminal the answer belongs to whichever program owns the pty at that moment,
+/// and that changes every time the user runs something — while the shell it
+/// replaced is still running, and will outlive them all.
+///
+/// The test is the same one [`pick_foreground`] applies, read from the same file:
+/// a process is in the terminal's foreground when its own process group is the
+/// one the terminal reports as foreground.
+#[must_use]
+pub fn still_foreground(pid: u32, started: u64) -> bool {
+    read_entry(pid).is_some_and(|entry| {
+        entry.started == started
+            && entry.tty_nr != 0
+            && entry.tpgid >= 0
+            && entry.pgrp as i32 == entry.tpgid
+    })
+}
+
 /// Upper bound on how many processes a subtree walk will visit.
 ///
 /// A tree cannot legitimately be this large, so hitting it means something is
@@ -478,6 +498,21 @@ mod tests {
         assert!(
             !still_running(me, started.saturating_add(1)),
             "a later start time is a different process"
+        );
+    }
+
+    #[test]
+    fn a_process_without_a_terminal_is_not_in_front() {
+        // The test process has no controlling terminal, so it can never be in a
+        // terminal's foreground. This is the distinction the memory depends on:
+        // being alive is not the same as being what the window shows.
+        let me = std::process::id();
+        let started = start_time(me).expect("a process can read its own stat");
+
+        assert!(still_running(me, started), "the process is alive");
+        assert!(
+            !still_foreground(me, started),
+            "but it has no terminal, so it is not in any terminal's foreground"
         );
     }
 

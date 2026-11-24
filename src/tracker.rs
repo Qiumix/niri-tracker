@@ -624,14 +624,37 @@ impl Tracker {
     /// cannot be read, because crediting time to a guess would be worse than
     /// crediting it to the terminal that is unmistakably on screen.
     fn resolve_app_id(&mut self, focus: &Focus) -> String {
-        self.resolve_app_id_with(focus, crate::terminal::foreground_process_avoiding)
+        self.resolve_app_id_using(
+            focus,
+            crate::terminal::foreground_process_avoiding,
+            crate::terminal::still_foreground,
+        )
     }
 
     /// The same, with the lookup given, so the rules can be exercised without
     /// depending on what happens to be running on the machine.
+    ///
+    /// The remembered answers are checked against the real `/proc`: whether a
+    /// process is still in front is a fact about the system, not a decision this
+    /// function makes.
+    #[cfg(test)]
     fn resolve_app_id_with<F>(&mut self, focus: &Focus, lookup: F) -> String
     where
         F: Fn(u32, &[(u32, u64)]) -> Option<crate::terminal::Process>,
+    {
+        self.resolve_app_id_using(focus, lookup, crate::terminal::still_foreground)
+    }
+
+    /// The same, with both the lookup and the liveness check given.
+    fn resolve_app_id_using<L, V>(
+        &mut self,
+        focus: &Focus,
+        lookup: L,
+        still_foreground: V,
+    ) -> String
+    where
+        L: Fn(u32, &[(u32, u64)]) -> Option<crate::terminal::Process>,
+        V: Fn(u32, u64) -> bool,
     {
         let entry = self
             .terminals
@@ -649,15 +672,21 @@ impl Tracker {
             crate::config::Fallback::Terminal => focus.app_id.clone(),
         };
 
-        // A window's answer holds while the window is open, and the process tree
-        // cannot tell two windows of one process apart — which is the whole reason
-        // this memory exists. It stops holding when the program exits, and the
-        // recorded process makes that visible.
+        // A remembered answer holds while the process that produced it is still the
+        // one the window is showing. The process tree cannot tell two windows of one
+        // process apart, which is the whole reason this memory exists — but inside a
+        // single terminal window the answer changes every time the user runs
+        // something, and the shell it replaced is still running and will outlive
+        // them all. So "is it alive" is not the question; "is it still in front" is.
         if let Some(known) = self.credited.get(&focus.window_id)
-            && crate::terminal::still_running(known.pid, known.started)
+            && still_foreground(known.pid, known.started)
         {
             return known.name.clone();
         }
+        // A remembered answer whose process is gone, or has been replaced by the next
+        // program in the same window, is not an answer any more: fall through and
+        // look again.
+        self.credited.remove(&focus.window_id);
 
         let Some(pid) = focus.pid else {
             return fallback;
@@ -973,23 +1002,60 @@ mod tests {
         // Two windows, one process. Once a window has been told what it is, asking
         // again must not re-derive it — the process tree cannot tell them apart and
         // would hand out the other window's program.
-        //
-        // The remembered process has to be a live one, because the memory is only
-        // trusted while the process it names still exists. This process will do.
-        let me = std::process::id();
-        let started = crate::terminal::start_time(me).expect("a process can read its own stat");
         let (terminals, _) = split_windows(&["nvim", "yazi"]);
         let mut tracker = Tracker::new(Duration::ZERO, terminals);
-        let pool = std::cell::RefCell::new(vec![("nvim", me, started), ("yazi", 200, 6)]);
+        let pool = std::cell::RefCell::new(vec![("nvim", 100, 5), ("yazi", 200, 6)]);
         let lookup = scripted(&pool);
+        let still_foreground = |_: u32, _: u64| true;
 
-        let first = tracker.resolve_app_id_with(&window("a", "kitty", "~"), &lookup);
+        let first =
+            tracker.resolve_app_id_using(&window("a", "kitty", "~"), &lookup, still_foreground);
         assert_eq!(first, "nvim");
 
         // A lookup that would answer differently proves the memory is what replied.
         let trap = |_: u32, _: &[(u32, u64)]| panic!("a remembered window must not look again");
-        let again = tracker.resolve_app_id_with(&window("a", "kitty", "~"), trap);
+        let again =
+            tracker.resolve_app_id_using(&window("a", "kitty", "~"), trap, still_foreground);
         assert_eq!(again, "nvim");
+    }
+
+    #[test]
+    fn a_shell_being_replaced_by_what_runs_in_it_expires_the_answer() {
+        // The bug this guards against: a terminal window is first seen with its
+        // shell in front, and the shell never exits. Asking "is that process still
+        // alive" answers yes forever, so every program started afterwards in the
+        // same window was credited to the shell.
+        //
+        // The answer is only good while the program it names is the one in front.
+        let (terminals, _) = split_windows(&["fish", "yazi", "nvim"]);
+        let mut tracker = Tracker::new(Duration::ZERO, terminals);
+        let target = window("a", "kitty", "~");
+
+        // First focus: the shell is in front.
+        let pool =
+            std::cell::RefCell::new(vec![("fish", 100, 5), ("yazi", 200, 6), ("nvim", 300, 7)]);
+        let in_front = std::cell::Cell::new(100_u32);
+        let still_foreground = |pid: u32, _: u64| pid == in_front.get();
+        assert_eq!(
+            tracker.resolve_app_id_using(&target, scripted(&pool), still_foreground),
+            "fish"
+        );
+
+        // The user runs yazi. fish is still alive and still the remembered process,
+        // but it is no longer what the terminal is showing.
+        in_front.set(200);
+        assert_eq!(
+            tracker.resolve_app_id_using(&target, scripted(&pool), still_foreground),
+            "yazi",
+            "the shell is no longer in front, so its answer must not be reused"
+        );
+
+        // And again, for nvim inside yazi.
+        in_front.set(300);
+        assert_eq!(
+            tracker.resolve_app_id_using(&target, scripted(&pool), still_foreground),
+            "nvim"
+        );
     }
 
     #[test]
@@ -1035,19 +1101,16 @@ mod tests {
         // If the memory were trusted, this would answer "nvim" without looking.
         let pool = std::cell::RefCell::new(vec![("fish", 300, 9)]);
         let lookup = scripted(&pool);
+        let still_foreground = |_: u32, _: u64| false;
         assert_eq!(
-            tracker.resolve_app_id_with(&target, &lookup),
+            tracker.resolve_app_id_using(&target, &lookup, still_foreground),
             "fish",
-            "a dead process's answer must be replaced by a fresh lookup"
+            "an answer whose process is gone must be replaced by a fresh lookup"
         );
     }
 
     #[test]
-    fn a_remembered_answer_is_reused_while_its_process_lives() {
-        // The other half of the rule, so the test above cannot pass by never
-        // consulting the memory at all.
-        let me = std::process::id();
-        let started = crate::terminal::start_time(me).expect("a process can read its own stat");
+    fn a_remembered_answer_is_reused_while_its_process_is_in_front() {
         let (terminals, _) = split_windows(&["nvim"]);
         let mut tracker = Tracker::new(Duration::ZERO, terminals);
         let target = window("a", "kitty", "~");
@@ -1055,13 +1118,17 @@ mod tests {
             target.window_id,
             Credited {
                 name: String::from("nvim"),
-                pid: me,
-                started,
+                pid: 100,
+                started: 5,
             },
         );
 
         let trap = |_: u32, _: &[(u32, u64)]| panic!("a live answer must not be looked up again");
-        assert_eq!(tracker.resolve_app_id_with(&target, trap), "nvim");
+        let still_foreground = |_: u32, _: u64| true;
+        assert_eq!(
+            tracker.resolve_app_id_using(&target, trap, still_foreground),
+            "nvim"
+        );
     }
 
     #[test]

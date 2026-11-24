@@ -7,7 +7,7 @@ alternatives that were ruled out.
 ## Build and check
 
 ```sh
-cargo test                     # 165 tests, no external services
+cargo test                     # 167 tests, no external services
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 
@@ -97,8 +97,12 @@ See `docs/protocol.md`. A new verb is additive and does not bump
   parenthesis — the thirteen between `tpgid` and it are flags, page faults, cpu
   time and scheduling.
 - **A pid does not identify a process.** Pids are reused, so a remembered pid can
-  belong to something else by the time it is checked. Pair it with `starttime`;
-  `terminal::still_running` does.
+  belong to something else by the time it is checked. Pair it with `starttime`.
+- **Alive is not the same as in front.** A remembered answer about a terminal
+  window names whichever program owned the pty at that moment, and the shell it
+  replaced is still running and will outlive it. `terminal::still_foreground`
+  asks the question that matters; `still_running` alone lets a window keep
+  reporting `fish` forever.
 - **The tracker remembers what each window was credited to, and the memory is
   load-bearing.** One process may own several windows, so the process tree cannot
   say which window is asking; elimination against what other windows claimed is
